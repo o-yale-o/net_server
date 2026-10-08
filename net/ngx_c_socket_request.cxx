@@ -38,6 +38,11 @@
 ******************************************************************************************/
 void CSocekt::OnRead(lpngx_connection_t pConn)
 {  
+    if(pConn->fd == -1) //连接已被同批其他事件关闭，防御性直接返回
+    {
+        return;
+    }
+
     bool isflood = false; //是否flood攻击；
 
     //收包，注意我们用的第二个和第三个参数，我们用的始终是这两个参数，因此我们必须保证 c->precvbuf指向正确的收包位置，保证c->irecvlen指向正确的收包宽度
@@ -45,6 +50,13 @@ void CSocekt::OnRead(lpngx_connection_t pConn)
     if( lRet <= 0 )  
     {
         return;//该处理的上边这个 ReadData() 函数处理过了，这里<=0是直接return        
+    }
+
+    //flood检测按"每次recv"计数：防止攻击者把包拆成1字节/次发送绕过"只统计完整包"的检测
+    if(m_iIsCheckFloodAttack == 1 && TestFlood(pConn))
+    {
+        KickConnection(pConn); //窗口内收包次数超限，判定flood攻击，直接踢出
+        return;
     }
 
     // 收到了一些字节（>0）：判断收了多少数据

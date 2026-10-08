@@ -55,7 +55,7 @@ struct ngx_connection_s
 	lpngx_listening_t         pListening;   //如果这个链接被分配给了一个监听套接字，那么这个里边就指向监听套接字对应的那个lpngx_listening_t的内存首地址		
 
 	//------------------------------------	
-	//unsigned                  instance:1;     //【位域】失效标志位：0：有效，1：失效【这个是官方nginx提供，到底有什么用，ngx_epoll_process_events()中详解】  
+	unsigned                  instance:1;     //【位域】失效标志位：每次从空闲链分配连接时取反，配合epoll事件ptr最低位识别过期事件
 	uint64_t                  iCurrSequence;    //我引入的一个序号，每次分配出去时+1，此法也有可能在一定程度上检测错包废包，具体怎么用，用到了再说
 	struct sockaddr           s_sockaddr;       //保存对方地址信息用的
 	//char                      addr_text[100]; //地址的文本信息，100足够，一般其实如果是ipv4地址，255.255.255.255，其实只需要20字节就够
@@ -203,6 +203,7 @@ private:
 	int m_iWorkerMaxConnection; //epoll连接的最大项数
 	int m_iListenPortNum;       //所监听的端口数量
 	int m_hEpoll;               //epoll_create返回的句柄
+	int                       m_iDummyFd;            //预留哑fd(/dev/null占位)，fd耗尽时释放它accept掉新连接防EPOLLIN死循环
 
 	//和连接池有关的
 	std::list<lpngx_connection_t>  m_listConnection;            //连接列表【连接池】

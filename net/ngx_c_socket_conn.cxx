@@ -35,8 +35,9 @@
         修改日期    修改人          修改标记        新版本号    修改原因
 ******************************************************************************************/
 ngx_connection_s::ngx_connection_s()
-{		
-    iCurrSequence = 0;    
+{
+    iCurrSequence = 0;
+    instance = 0;             //失效标志位初始化为0，之后每次分配出去时取反             //失效标志位初始化为0，之后每次分配出去时取反
     pthread_mutex_init(&mutexLogicProcess, NULL); //互斥量初始化
 }
 
@@ -198,8 +199,9 @@ lpngx_connection_t CSocekt::GetConnectionFromFreeList(int isock)
     {
         //有空闲的，自然是从空闲的中摘取
         lpngx_connection_t pConn = m_listFreeConnection.front(); //返回第一个元素但不检查元素存在与否
-        m_listFreeConnection.pop_front();                         //移除第一个元素但不返回	
+        m_listFreeConnection.pop_front();                         //移除第一个元素但不返回
         pConn->InitBeforeUse();
+        pConn->instance = !pConn->instance;  //分配出去时取反失效标志，旧事件据此判定过期(nginx官方做法)
         --m_iFreeConnection; 
         pConn->fd = isock;
         return pConn;
@@ -210,6 +212,7 @@ lpngx_connection_t CSocekt::GetConnectionFromFreeList(int isock)
     lpngx_connection_t pConn = (lpngx_connection_t)pMemory->AllocMemory(sizeof(ngx_connection_t),true);
     pConn = new(pConn) ngx_connection_t();
     pConn->InitBeforeUse();
+    pConn->instance = !pConn->instance;      //分配出去时取反失效标志(nginx官方做法)
     m_listConnection.push_back(pConn); //入到总表中来，但不能入到空闲表中来，因为凡是调这个函数的，肯定是要用这个连接的
     ++m_iTotalConnection;             
     pConn->fd = isock;

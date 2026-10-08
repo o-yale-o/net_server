@@ -116,8 +116,20 @@ void CSocekt::OnAccept(lpngx_connection_t pConnOld)
             
             if ( iErr == EMFILE || iErr == ENFILE ) 
             {
-                //do nothing，这个官方做法是先把读事件从listen socket上移除，然后再弄个定时器，定时器到了则继续执行该函数，但是定时器到了有个标记，会把读事件增加到listen socket上去；
-                //我这里目前先不处理吧【因为上边已经写这个日志了】；
+                //fd耗尽：释放预留的哑fd，把挂着的新连接accept出来后立即关闭，防止LT模式下EPOLLIN反复触发把CPU打满
+                if(m_iDummyFd != -1)
+                {
+                    close(m_iDummyFd);
+                    m_iDummyFd = -1;
+                    int iSockTemp = accept(pConnOld->fd, &sockaddrRemote, &iSockaddrRemoteLen); //把挂着的新连接取出来
+                    if(iSockTemp != -1)
+                    {
+                        close(iSockTemp); //立即关闭，本服务器已无力服务新连接
+                        LOG_CRIT("进程fd已耗尽，拒绝了一条新连接!");
+                    }
+                    m_iDummyFd = open("/dev/null", O_RDONLY); //重新占住一个fd位置，为下次兜底
+                }
+                return;
             }            
             return;
         }  //end if(iSockNew == -1)

@@ -43,6 +43,7 @@ CSocekt::CSocekt()
 
     //epoll相关
     m_hEpoll = -1;          //epoll返回的句柄
+    m_iDummyFd = -1;       //预留哑fd，在打开监听套接字后真正占位
     //m_pconnections = NULL;       //连接池【连接数组】先给空
     //m_pfree_connections = NULL;  //连接池中空闲的连接链 
     //m_pread_events = NULL;       //读事件数组给空
@@ -582,20 +583,21 @@ bool CSocekt::TestFlood(lpngx_connection_t pConn)
 	uint64_t        iCurrTime;   //当前时间（单位：毫秒）
 	bool  bRet      = false;
 	
-	gettimeofday(&sCurrTime, NULL); //取得当前时间
+    gettimeofday(&sCurrTime, NULL); //取得当前时间
     iCurrTime =  (sCurrTime.tv_sec * 1000 + sCurrTime.tv_usec / 1000);  //毫秒
-	if((iCurrTime - pConn->uiTimeLastFloodKick) < m_iCheckFloodAttackInterval)   //两次收到包的时间 < 100毫秒
-	{
-        //发包太频繁记录
-		pConn->iFloodAttackCount++;
-		pConn->uiTimeLastFloodKick = iCurrTime;
-	}
-	else
-	{
-        //既然发布不这么频繁，则恢复计数值
-		pConn->iFloodAttackCount = 0;
-		pConn->uiTimeLastFloodKick = iCurrTime;
-	}
+
+    //固定窗口计数：uiTimeLastFloodKick保存窗口起点，窗口内只累计不清零，防止攻击者按"间隔+1毫秒"节奏发包绕过检测
+    if(pConn->uiTimeLastFloodKick == 0 || (iCurrTime - pConn->uiTimeLastFloodKick) >= m_iCheckFloodAttackInterval)
+    {
+        //距窗口起点已超过检测间隔：开启新窗口，本包计为第1次
+        pConn->uiTimeLastFloodKick = iCurrTime;
+        pConn->iFloodAttackCount   = 1;
+    }
+    else
+    {
+        //仍在窗口内：累计收包次数【按收包次数计数而非按完整包，拆包发送同样计入】
+        pConn->iFloodAttackCount++;
+    }
 
     //LogStdErr(0,"pConn->iFloodAttackCount=%d,m_iFloodKickCount=%d.",pConn->iFloodAttackCount,m_iFloodKickCount);
 
@@ -736,6 +738,12 @@ int CSocekt::EpollInit()
             exit(2); //有问题，直接退出，日志 已经写过了
         }
     } //end for 
+
+    //(4)预留一个哑fd：进程fd耗尽(EMFILE)时，先释放它才能accept出新连接，防止LT模式下EPOLLIN反复触发的死循环
+    if(m_iDummyFd == -1)
+    {
+        m_iDummyFd = open("/dev/null", O_RDONLY); //占住一个fd位置
+    }
     return 1;
 }
 
@@ -874,7 +882,8 @@ int CSocekt::OperateEpollEvent(int fd, uint32_t iEventType, uint32_t iEventFlag,
     // 原来的理解中，绑定ptr这个事，只在EPOLL_CTL_ADD的时候做一次即可，但是发现EPOLL_CTL_MOD似乎会破坏掉.data.ptr，因此不管是EPOLL_CTL_ADD还是EPOLL_CTL_MOD，都重新赋值!
     // 找了下内核源码SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,		struct epoll_event __user *, event)，感觉真的会覆盖掉：
     //copy_from_user(&epds, event, sizeof(struct epoll_event)))，感觉这个内核处理这个事情太粗暴了
-    ev.data.ptr = (void *)pConn;
+    //参照nginx官方：指针最低位必为0，把instance标志|进最低位，事件返回时能核对连接是否已被复用
+    ev.data.ptr = (void *)( (uintptr_t)pConn | (pConn->instance ? 1 : 0) );
 
     if(epoll_ctl(m_hEpoll,iEventType,fd,&ev) == -1)
     {
@@ -949,51 +958,22 @@ int CSocekt::ProcessEpollEvents(int iTimeOut)
     uint32_t           revents;
     for(int i = 0; i < events; ++i)    //遍历本次epoll_wait返回的所有事件，注意events才是返回的实际事件数量
     {
-        pConn = (lpngx_connection_t)(m_arrEvents[i].data.ptr);           //ngx_epoll_add_event()给进去的，这里能取出来
+        pConn = (lpngx_connection_t)(m_arrEvents[i].data.ptr);           //OperateEpollEvent()给进去的，这里能取出来
+        //恢复nginx官方的过期事件过滤【此前整段被注释，连接复用后残留事件会错操作新连接】：
+        uintptr_t uInstance = (uintptr_t)pConn & 1;                       //取出登记时的instance标志(最低位)
+        pConn = (lpngx_connection_t)((uintptr_t)pConn & ~(uintptr_t)1);   //去掉最低位，还原连接对象真实地址
 
-        /*
-        instance = (uintptr_t) c & 1;                             //将地址的最后一位取出来，用instance变量标识, 见ngx_epoll_add_event，该值是当时随着连接池中的连接一起给进来的
-                                                                  //取得的是你当时调用ngx_epoll_add_event()的时候，这个连接里边的instance变量的值；
-        pConn = (lpngx_connection_t) ((uintptr_t)pConn & (uintptr_t) ~1); //最后1位干掉，得到真正的c地址
-
-        //仔细分析一下官方nginx的这个判断
-        //过滤过期事件的；
-        if(c->fd == -1)  //一个套接字，当关联一个 连接池中的连接【对象】时，这个套接字值是要给到c->fd的，
-                           //那什么时候这个c->fd会变成-1呢？关闭连接时这个fd会被设置为-1，哪行代码设置的-1再研究，但应该不是ngx_free_connection()函数设置的-1
-        {                 
-            //比如我们用epoll_wait取得三个事件，处理第一个事件时，因为业务需要，我们把这个连接关闭，那我们应该会把c->fd设置为-1；
-            //第二个事件照常处理
-            //第三个事件，假如这第三个事件，也跟第一个事件对应的是同一个连接，那这个条件就会成立；那么这种事件，属于过期事件，不该处理
-
-            //这里可以增加个日志，也可以不增加日志
-            LOG_INFO("CSocekt::ProcessEpollEvents()中遇到了fd=-1的过期事件:%p.",c);
-            continue; //这种事件就不处理即可
-        }
-
-        //过滤过期事件的；
-        if(c->instance != instance)
+        if(pConn->fd == -1) //同批事件里该连接已被Kick/Close(fd已置-1)，这是过期事件
         {
-            //--------------------以下这些说法来自于资料--------------------------------------
-            //什么时候这个条件成立呢？【换种问法：instance标志为什么可以判断事件是否过期呢？】
-            //比如我们用epoll_wait取得三个事件，处理第一个事件时，因为业务需要，我们把这个连接关闭【麻烦就麻烦在这个连接被服务器关闭上了】，但是恰好第三个事件也跟这个连接有关；
-            //因为第一个事件就把socket连接关闭了，显然第三个事件我们是不应该处理的【因为这是个过期事件】，若处理肯定会导致错误；
-            //那我们上述把c->fd设置为-1，可以解决这个问题吗？ 能解决一部分问题，但另外一部分不能解决，不能解决的问题描述如下【这么离奇的情况应该极少遇到】：
-
-            //a)处理第一个事件时，因为业务需要，我们把这个连接【假设套接字为50】关闭，同时设置c->fd = -1;并且调用ngx_free_connection将该连接归还给连接池；
-            //b)处理第二个事件，恰好第二个事件是建立新连接事件，调用ngx_get_connection从连接池中取出的连接非常可能就是刚刚释放的第一个事件对应的连接池中的连接；
-            //c)又因为a中套接字50被释放了，所以会被操作系统拿来复用，复用给了b)【一般这么快就被复用也是醉了】；
-            //d)当处理第三个事件时，第三个事件其实是已经过期的，应该不处理，那怎么判断这第三个事件是过期的呢？ 【假设现在处理的是第三个事件，此时这个 连接池中的该连接 实际上已经被用作第二个事件对应的socket上了】；
-                //依靠instance标志位能够解决这个问题，当调用ngx_get_connection从连接池中获取一个新连接时，我们把instance标志位置反，所以这个条件如果不成立，说明这个连接已经被挪作他用了；
-
-            //--------------------我的个人思考--------------------------------------
-            //如果收到了若干个事件，其中连接关闭也搞了多次，导致这个instance标志位被取反2次，那么，造成的结果就是：还是有可能遇到某些过期事件没有被发现【这里也就没有被continue】，照旧被当做没过期事件处理了；
-                  //如果是这样，那就只能被照旧处理了。可能会造成偶尔某个连接被误关闭？但是整体服务器程序运行应该是平稳，问题不大的，这种漏网而被当成没过期来处理的的过期事件应该是极少发生的
-
-            LOG_INFO("遇到了instance值改变的过期事件:%p.",c);
-            continue; //这种事件就不处理即可
+            LOG_INFO("CSocekt::ProcessEpollEvents()中遇到了fd=-1的过期事件:%p.",pConn);
+            continue; //不处理
         }
-        //存在一种可能性，过期事件没被过滤完整【非常极端】，走下来的；
-        */
+
+        if((unsigned int)pConn->instance != (unsigned int)uInstance) //连接已关闭且被新连接复用(instance已取反)
+        {
+            LOG_INFO("CSocekt::ProcessEpollEvents()中遇到了instance值改变的过期事件:%p.",pConn);
+            continue; //不处理，防止旧事件操作到复用后的新连接
+        }
 
         //能走到这里，我们认为这些事件都没过期，就正常开始处理
         revents = m_arrEvents[i].events;//取出事件类型
@@ -1096,12 +1076,20 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
 
         if(pSocket->m_iListSendBuffCount > 0) //原子的 
         {
-            iErr = pthread_mutex_lock(&pSocket->m_mutexListSendBuff); //因为我们要操作发送消息对列m_MsgSendQueue，所以这里要临界            
+            //(1)锁内只做队列摘取，绝不持锁send()：慢客户端不再能阻塞所有业务线程的入队操作
+            iErr = pthread_mutex_lock(&pSocket->m_mutexListSendBuff);
             if(iErr != 0) LOG_STDERR1(iErr,"CSocekt::ServerSendQueueThread()中pthread_mutex_lock()失败，返回的错误码为%d!",iErr);
 
-            pos    = pSocket->m_listSendBuff.begin();
-			posend = pSocket->m_listSendBuff.end();
+            std::list<char *> listBatch;   //本批待发送消息(已从共享队列整体摘走)
+            listBatch.splice(listBatch.begin(), pSocket->m_listSendBuff); //整队摘走，锁内零系统调用
+            pSocket->m_iListSendBuffCount = 0;  //共享队列已摘空
+            iErr = pthread_mutex_unlock(&pSocket->m_mutexListSendBuff);
+            if(iErr != 0) LOG_STDERR1(iErr,"CSocekt::ServerSendQueueThread()中pthread_mutex_unlock()失败，返回的错误码为%d!",iErr);
 
+            //(2)锁外逐条发送
+            std::list<char *> listRemain;  //因发送缓冲区满暂不能发送的消息，稍后按原顺序塞回共享队列头部
+            pos    = listBatch.begin();
+            posend = listBatch.end();
             while(pos != posend)
             {
                 pcMsgBuf = (*pos);                          //拿到的每个消息都是 消息头+包头+包体【但要注意，我们是不发送消息头给客户端的】
@@ -1116,16 +1104,15 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
                     //本包中保存的序列号与p_Conn【连接池中连接】中实际的序列号已经不同，丢弃此消息，小心处理该消息的删除
                     pos2=pos;
                     pos++;
-                    pSocket->m_listSendBuff.erase(pos2);
-                    --pSocket->m_iListSendBuffCount; //发送消息队列容量少1		
+                    listBatch.erase(pos2);           //只从本批删除，不再动共享队列
                     pMemory->FreeMemory(pcMsgBuf);	
                     continue;
                 } //end if
 
                 if(pConn->iThrowsendCount > 0) 
                 {
-                    //靠系统驱动来发送消息，所以这里不能再发送
-                    pos++;
+                    //靠系统驱动来发送消息，所以这里不能再发送；从本批挪到保留队(保持原顺序)，稍后塞回共享队列
+                    listRemain.splice(listRemain.end(), listBatch, pos++);
                     continue;
                 }
 
@@ -1135,8 +1122,7 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
                 pConn->pcSendMemery = pcMsgBuf;      //发送后释放用的，因为这段内存是new出来的
                 pos2=pos;
 				pos++;
-                pSocket->m_listSendBuff.erase(pos2);
-                --pSocket->m_iListSendBuffCount;      //发送消息队列容量少1	
+                listBatch.erase(pos2);               //只从本批删除，不再动共享队列
                 pConn->pcSendBuff = (char *)pPkgHeader;   //要发送的数据的缓冲区指针，因为发送数据不一定全部都能发送出去，我们要记录数据发送到了哪里，需要知道下次数据从哪里开始发送
                 iTmp = ntohs(pPkgHeader->pkgLen);        //包头+包体 长度 ，打包时用了htons【本机序转网络序】，所以这里为了得到该数值，用了个ntohs【网络序转本机序】；
                 pConn->iSendLen = iTmp;                 //要发送多少数据，因为发送数据不一定全部都能发送出去，我们需要知道剩余有多少数据还没发送
@@ -1234,8 +1220,16 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
 
             } //end while(pos != posend)
 
-            iErr = pthread_mutex_unlock(&pSocket->m_mutexListSendBuff); 
-            if(iErr != 0)  LOG_STDERR1(iErr,"CSocekt::ServerSendQueueThread()pthread_mutex_unlock()失败，返回的错误码为%d!",iErr);
+            //(3)把因发送缓冲满暂不能发送的消息按原顺序塞回共享队列头部，等下次唤醒继续
+            if(!listRemain.empty())
+            {
+                iErr = pthread_mutex_lock(&pSocket->m_mutexListSendBuff);
+                if(iErr != 0) LOG_STDERR1(iErr,"CSocekt::ServerSendQueueThread()中pthread_mutex_lock()失败，返回的错误码为%d!",iErr);
+                pSocket->m_listSendBuff.splice(pSocket->m_listSendBuff.begin(), listRemain);
+                pSocket->m_iListSendBuffCount += (int)listRemain.size();
+                iErr = pthread_mutex_unlock(&pSocket->m_mutexListSendBuff);
+                if(iErr != 0) LOG_STDERR1(iErr,"CSocekt::ServerSendQueueThread()pthread_mutex_unlock()失败，返回的错误码为%d!",iErr);
+            }
             
         } //if(pSocket->m_iListSendBuffCount > 0)
     } //end while
