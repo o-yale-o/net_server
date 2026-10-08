@@ -1,6 +1,8 @@
 ﻿//全局函数声明
 #pragma once
 
+#include <sys/types.h>  //pid_t
+
 typedef unsigned char u_char;
 #define MYVER "1.0.0"
 
@@ -26,3 +28,4 @@ int    NgxInitSignals();
 void   NgxMasterProcessCycle();
 int    NgxDaemon();
 void   NgxProcessNetEventsAndTimers();
+void   NgxRemoveWorkerPid(pid_t pid);  //worker被waitpid收尸后，从master的worker表中摘除该pid

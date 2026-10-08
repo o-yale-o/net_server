@@ -136,10 +136,14 @@ static void OnSignalHandler(int iSigno, siginfo_t *pSignfo, void *pvUContext)
         switch (iSigno)
         {
         case SIGCHLD:  //一般子进程退出会收到该信号
-            g_atomicHaveSigCHLD = 1;  //标记子进程状态变化，日后master主进程的for(;;)循环中可能会用到这个变量【比如重新产生一个子进程】
+            g_atomicHaveSigCHLD = 1;  //标记子进程状态变化，master主循环中据此补齐worker
             break;
 
-        //.....其他信号处理以后待增加
+        case SIGINT:   //终端中断符
+        case SIGTERM:  //终止
+        case SIGQUIT:  //终端退出符
+            g_iStopEvent = 1;  //master收到退出信号：主循环break后统一通知worker并收尾
+            break;
 
         default:
             break;
@@ -148,8 +152,17 @@ static void OnSignalHandler(int iSigno, siginfo_t *pSignfo, void *pvUContext)
     else if(g_iProcessType == NGX_PROCESS_WORKER) //worker进程，具体干活的进程，处理的信号相对比较少
     {
         //worker进程的往这里走
-        //......以后再增加
-        //....
+        switch (iSigno)
+        {
+        case SIGINT:   //终端中断符
+        case SIGTERM:  //终止
+        case SIGQUIT:  //终端退出符
+            g_iStopEvent = 1;  //通知NgxWorkerProcessCycle()主循环退出，做清理后exit
+            break;
+
+        default:
+            break;
+        } //end switch
     }
     else
     {
@@ -238,6 +251,7 @@ static void GetChildProcessStatus(void)
 
         //能走到这里：表示waitpid（）成功【返回进程id】 . 打印子进程退出日志
         iOne = 1;  //标记waitpid()返回了正常的返回值
+        NgxRemoveWorkerPid(pid);  //从master的worker表中摘除该pid，主循环据此发现减员并补齐
         if(WTERMSIG(iStatus))  //获取使子进程终止的信号编号
         {
             LOG_ALERT("pid = %P exited on signal %d!",pid,WTERMSIG(iStatus));//获取使子进程终止的信号编号

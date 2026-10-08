@@ -7,6 +7,7 @@
 #include <signal.h>   //信号相关头文件 
 #include <errno.h>    //errno
 #include <unistd.h>
+#include <sys/wait.h> //waitpid
 
 #include "ngx_func.h"
 #include "ngx_macro.h"
@@ -20,6 +21,14 @@ static void NgxWorkerProcessInit(int iProcesseIndex);
 
 //变量声明
 static u_char  g_szMasterProcessTitle[] = "master process";
+
+//worker进程pid表：master据此收尸摘除、发现减员并自动补齐、退出时统一通知
+#define _MAX_WORKER_PROCESSES_  1024          //worker进程数量上限
+static pid_t g_arrWorkerPid[_MAX_WORKER_PROCESSES_];  //各槽位worker的pid，-1表示该槽位无存活worker
+static int   g_iWorkerProcNum = 0;            //配置要求的worker数量
+
+static void NgxRespawnMissingWorkers();       //补齐退出的worker
+static void NgxMasterShutdownWorkers();       //master退出时通知所有worker并等待收尸
 
 /******************************************************************************************
 函数原型: 
@@ -109,14 +118,28 @@ void NgxMasterProcessCycle()
                                    // 类似于：windows的  WaitForSingleObject()  ...    
 
         // 信号来了，并且 OnSignalHandler() 执行完，才运行到这里!!!
-        // printf("OnSignalHandler() 执行完毕!  才执行到sigsuspend()下边来了\n");
-        
-        //printf("master进程休息1秒\n");      
-        //LogStdErr(0,"haha--这是父进程，pid为%P",g_CurrPID); 
+
+        if(g_iStopEvent != 0) //收到SIGINT/SIGTERM/SIGQUIT：开始优雅退出
+        {
+            LOG_INFO("master进程收到退出信号，开始通知所有worker进程退出...");
+            break; //跳出主循环，走统一收尾
+        }
+
+        if(g_atomicHaveSigCHLD != 0) //有worker退出(收尸已在信号处理函数中完成)：补齐减员
+        {
+            g_atomicHaveSigCHLD = 0;  //清除标记
+            NgxRespawnMissingWorkers(); //把退出worker的槽位重新fork补齐
+        }
+
         sleep(1); //休息1秒        
         //以后扩充.......
 
     }// end for(;;)
+
+    //master统一收尾：通知所有worker退出并等待收尸
+    NgxMasterShutdownWorkers();
+    LOG_INFO("master进程退出，再见了!");
+    return;
     return;
 }
 
@@ -136,9 +159,13 @@ static void NgxStartWorkerProcesses(int iProcessesNum)
 {
     int i;
 
-    for (i = 0; i < iProcessesNum; i++)  //master进程在走这个循环，来创建若干个子进程
+    if(iProcessesNum > _MAX_WORKER_PROCESSES_) //超出上限则截断，防止pid表越界
+        iProcessesNum = _MAX_WORKER_PROCESSES_;
+    g_iWorkerProcNum = iProcessesNum;  //登记配置要求的worker数量
+    for(i = 0; i < g_iWorkerProcNum; i++)  //master进程在走这个循环，来创建若干个子进程
     {
-        NgxSpawnProcess( i, "worker process" );
+        g_arrWorkerPid[i] = -1;      //先标记该槽位无worker，spawn成功后会覆盖
+        NgxSpawnProcess(i, "worker process");
     }
 
     return;
@@ -175,6 +202,8 @@ static int NgxSpawnProcess(int iProcesseIndex, const char *pcProcName)
         break;
 
     default: //这是父进程，直接break,继续往后后走            
+        if(iProcesseIndex >= 0 && iProcesseIndex < _MAX_WORKER_PROCESSES_)
+            g_arrWorkerPid[iProcesseIndex] = pid;  //登记worker pid，供收尸摘除/减员补齐/退出通知使用
         break;
     }//end switch
 
@@ -214,6 +243,11 @@ static void NgxWorkerProcessCycle(int iProcesseIndex,const char *pcProcName)
     //setvbuf(stdout,NULL,_IONBF,0); //这个函数. 直接将printf缓冲区禁止， printf就直接输出了。
     for(;;)
     {
+        if(g_iStopEvent != 0) //master发来退出通知(信号处理函数已置位)
+        {
+            LOG_INFO("worker进程收到退出信号，开始清理并退出...");
+            break; //跳出主循环，执行下面的清理
+        }
 
         //先sleep一下 以后扩充.......
         //printf("worker进程休息1秒");       
@@ -247,7 +281,7 @@ static void NgxWorkerProcessCycle(int iProcesseIndex,const char *pcProcName)
     //如果从这个循环跳出来
     g_ThreadPool.StopAll();      //考虑在这里停止线程池；
     g_LogicSocket.ShutdownSubProc(); //socket需要释放的东西考虑释放；
-    return;
+    exit(0); //worker进程必须直接退出，绝不能return回NgxSpawnProcess()继续master的创建流程
 }
 
 /******************************************************************************************
@@ -295,5 +329,116 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
     
     //....将来再扩充代码
     //....
+    return;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: 发现某个槽位的worker已退出(收尸时pid被置-1)，重新fork补齐
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: 
+被引用于: NgxMasterProcessCycle()
+创建日期: 2026年10月08日
+修改记录: 
+******************************************************************************************/
+static void NgxRespawnMissingWorkers()
+{
+    int i;
+    for(i = 0; i < g_iWorkerProcNum; i++)
+    {
+        if(g_arrWorkerPid[i] == -1) //该槽位worker已退出，重新拉起
+        {
+            pid_t pidNew = NgxSpawnProcess(i, "worker process");
+            if(pidNew > 0)
+            {
+                LOG_INFO("worker进程[i=%d]退出，已重新拉起，新pid=%P!", i, pidNew);
+            }
+        }        
+    } //end for
+    return;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: master退出时统一收尾：给所有存活worker发SIGTERM，等待其退出并收尸；超时则SIGKILL强杀
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: 
+被引用于: NgxMasterProcessCycle()
+创建日期: 2026年10月08日
+修改记录: 
+******************************************************************************************/
+static void NgxMasterShutdownWorkers()
+{
+    int i, iWait;
+    pid_t pidWait;
+
+    //(1)通知所有存活worker退出
+    for(i = 0; i < g_iWorkerProcNum; i++)
+    {
+        if(g_arrWorkerPid[i] > 0)
+        {
+            kill(g_arrWorkerPid[i], SIGTERM);
+        }        
+    } //end for
+
+    //(2)最多等10秒让worker自行退出；期间兜底收尸(worker的SIGCHLD信号在master里被阻塞，
+    //   信号处理函数不会运行，所以这里必须自己waitpid收尸并摘表)
+    for(iWait = 0; iWait < 100; iWait++)
+    {
+        int iAlive = 0;
+        for(i = 0; i < g_iWorkerProcNum; i++)
+        {
+            if(g_arrWorkerPid[i] > 0)
+                iAlive++;
+        } //end for
+        if(iAlive == 0) //全部退出，收尾完成
+            return;
+
+        pidWait = waitpid(-1, NULL, WNOHANG); //兜底收尸，防僵尸
+        if(pidWait > 0)
+        {
+            NgxRemoveWorkerPid(pidWait);
+        }        
+        usleep(100 * 1000); //休息100毫秒再查
+    } //end for
+
+    //(3)超时仍存活，SIGKILL强杀并阻塞收尸
+    for(i = 0; i < g_iWorkerProcNum; i++)
+    {
+        if(g_arrWorkerPid[i] > 0)
+        {
+            LOG_ALERT("worker进程pid=%P未在限期退出，强制杀死!", g_arrWorkerPid[i]);
+            kill(g_arrWorkerPid[i], SIGKILL);
+            waitpid(g_arrWorkerPid[i], NULL, 0); //阻塞等待，确保回收
+            g_arrWorkerPid[i] = -1;
+        }        
+    } //end for
+    return;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: worker被waitpid收尸后，从master的worker表中摘除该pid(置-1)，
+          主循环的NgxRespawnMissingWorkers()据此发现减员并补齐
+参数说明:   pid     pid_t     被收尸的子进程pid
+返 回 值: 
+依 赖 于: 
+被引用于: GetChildProcessStatus()(signal/ngx_signal.cxx)、NgxMasterShutdownWorkers()
+创建日期: 2026年10月08日
+修改记录: 
+******************************************************************************************/
+void NgxRemoveWorkerPid(pid_t pid)
+{
+    int i;
+    for(i = 0; i < g_iWorkerProcNum; i++)
+    {
+        if(g_arrWorkerPid[i] == pid)
+        {
+            g_arrWorkerPid[i] = -1; //标记该槽位无存活worker
+            return;
+        }        
+    } //end for
     return;
 }

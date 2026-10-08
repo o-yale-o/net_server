@@ -40,3 +40,18 @@
 - close(fd) 之后才能把对象归还复用队列；复用队列取出的对象必须校验序列号（`iCurrSequence`）。
 - 单例一律使用 C++11 Meyers 单例（函数内 static），禁止手写双检锁。
 - 错误路径必须回滚已分配资源；`while(!feof(f))` 模式禁止，一律 `while(fgets(...))`。
+
+## 4. GitHub 推送总则（拐弯推送法）
+
+**所有 git push 到 GitHub 一律按以下流程处理**（Linux 端无 VPN，直连 GitHub 不稳定，禁止直接从 Linux push）：
+
+1. Linux 端打包：`git bundle create /tmp/<repo>-<branch>.bundle refs/heads/<branch>`（不要用 `--all`，否则 ref 重复会导致克隆失败），用 `git bundle verify` 确认"完整历史"；
+2. 传输到 Win11 本机（如 DSH `rw_download`）；
+3. 本机克隆：`git clone <bundle路径> <临时目录>`；
+4. 本机改远程：`git -C <临时目录> remote set-url origin https://github.com/<user>/<repo>.git`；
+5. 本机推送：`git -C <临时目录> -c http.sslBackend=openssl push origin <branch>`。
+   - 必须用 `openssl` 后端（schannel 在 VPN 环境会报 `SEC_E_NO_CREDENTIALS`）；
+   - 首次推送由 Git Credential Manager 弹窗登录，之后免密；
+6. 推送后 `ls-remote` 核验远端 HEAD；清理临时克隆与 bundle。
+
+补充：从 GitHub 拉取/同步同理反向操作（本机 clone/pull → bundle → 传回 Linux → `git pull ../xxx.bundle master`）。

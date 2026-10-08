@@ -40,5 +40,5 @@ extern pid_t         g_ParentPID;
 extern ngx_log_t     g_structNgxLog;
 extern int           g_iProcessType;   
 extern sig_atomic_t  g_atomicHaveSigCHLD;   
-extern int           g_iStopEvent;
+extern sig_atomic_t  g_iStopEvent;   //退出标记 0-不退出 1-退出（信号处理器与主循环共享，必须用sig_atomic_t）
 

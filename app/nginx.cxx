@@ -35,7 +35,7 @@ CThreadPool    g_ThreadPool;    //线程池全局对象
 pid_t   g_CurrPID;      //当前进程的pid
 pid_t   g_ParentPID;    //父进程的pid
 int     g_iProcessType; //进程类型，比如master,worker进程等: master进程、work进程
-int     g_iStopEvent;   //退出标记  0-不退出 1-退出
+sig_atomic_t g_iStopEvent;   //退出标记  0-不退出 1-退出（信号处理器与主循环共享）
 
 sig_atomic_t  g_atomicHaveSigCHLD;         //标记子进程状态变化[一般是子进程发来SIGCHLD信号表示退出],sig_atomic_t:系统定义的类型：访问或改变这些变量需要在计算机的一条指令内完成
                                    //一般等价于int【通常情况下，int类型的变量通常是原子访问的，也可以认为 sig_atomic_t就是int类型的数据】                                   
