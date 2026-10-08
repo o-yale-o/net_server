@@ -477,12 +477,12 @@ lblRRTD:
 ******************************************************************************************/
 void CSocekt::CloseConnection(lpngx_connection_t pConn)
 {    
-    //pConn->fd = -1; //官方nginx这么写，这么写有意义；    不要这个东西，回收时不要轻易东连接里边的内容
-    InputConnection2FreeList(pConn); 
+    //先close(fd)并置-1，再把连接归还空闲链：否则归还后连接可能立刻被其他线程取出绑定新fd，这里的close()会误关新连接的socket
     if(pConn->fd != -1)
     {
         close(pConn->fd);
         pConn->fd = -1;
     }    
+    InputConnection2FreeList(pConn); 
     return;
 }

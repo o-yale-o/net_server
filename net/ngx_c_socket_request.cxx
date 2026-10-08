@@ -456,6 +456,10 @@ void CSocekt::OnWrite(lpngx_connection_t pConn)
 
     pMemory->FreeMemory(pConn->pcSendMemery);  //释放内存
     pConn->pcSendMemery = NULL;        
+    if(lSendSize <= 0) //0或-2：对端断开，主动踢掉连接，否则该连接上排队的消息会被逐条静默丢弃
+    {
+        KickConnection(pConn);
+    }
     --pConn->iThrowsendCount;  //建议放在最后执行
     return;
 }

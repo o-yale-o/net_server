@@ -21,35 +21,13 @@ private:
 public:
 	~CCRC32();
 private:
-	static CCRC32 *m_instance;
 
 public:	
-	static CCRC32* GetInstance() 
+	static CCRC32* GetInstance() //单例：C++11 Meyers单例，函数内static的初始化由编译器保证线程安全
 	{
-		if(m_instance == NULL)
-		{
-			//锁
-			if(m_instance == NULL)
-			{				
-				m_instance = new CCRC32();
-				static CGarhuishou cl; 
-			}
-			//放锁
-		}
-		return m_instance;
+		static CCRC32 instance;
+		return &instance;
 	}	
-	class CGarhuishou 
-	{
-	public:				
-		~CGarhuishou()
-		{
-			if (CCRC32::m_instance)
-			{						
-				delete CCRC32::m_instance;
-				CCRC32::m_instance = NULL;				
-			}
-		}
-	};
 	//-------
 public:
 

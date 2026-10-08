@@ -88,7 +88,7 @@ void LogStdErr(int iSystemErrCode, const char *fmt, ...)
         //因为上边已经把err信息显示出来了，所以这里就不要显示了，否则显示重复了
         iSystemErrCode = 0;    //不要再次把错误信息弄到字符串里，否则字符串里重复了
         pcWritePos--;  *pcWritePos = 0; //把原来末尾的\n干掉，因为到ngx_log_err_core中还会加这个\n 
-        LogErrorCore(NGX_LOG_STDERR,iSystemErrCode,(const char *)szErrBuff); 
+        LogErrorCore(NGX_LOG_STDERR,iSystemErrCode,"%s",(const char *)szErrBuff); //内容里含客户端可控数据，必须当"%s"传入，防止被二次格式化解析
     }    
     return;
 }

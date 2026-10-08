@@ -102,6 +102,16 @@ void CLogicSocket::ProcessClientRequest(char *pcMsgBuf)
     void  *pPkgBody;                                                              //指向包体的指针
     unsigned short pkglen = ntohs(pPkgHeader->pkgLen);                            //客户端指明的包宽度【包头+包体】
 
+    if(pkglen < m_iLenPkgHeader) //包宽度连包头都不够，非法包，直接丢弃，防止后续长度下溢导致越界
+    {
+        LOG_STDERR("CLogicSocket::ProcessClientRequest()中收到非法包:包宽度[%d]小于包头长度[%d]，丢弃!",pkglen,m_iLenPkgHeader);
+        return;
+    }
+    if(pkglen > _PKG_MAX_LENGTH) //超过协议允许的最大包宽度，非法包，直接丢弃
+    {
+        LOG_STDERR("CLogicSocket::ProcessClientRequest()中收到非法包:包宽度[%d]超过最大限制[%d]，丢弃!",pkglen,_PKG_MAX_LENGTH);
+        return;
+    }
     if(m_iLenPkgHeader == pkglen)
     {
         //没有包体，只有包头

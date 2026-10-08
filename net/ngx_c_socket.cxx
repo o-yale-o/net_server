@@ -1030,8 +1030,16 @@ int CSocekt::ProcessEpollEvents(int iTimeOut)
                 //8221 = ‭0010 0000 0001 1101‬  ：包括 EPOLLRDHUP ，EPOLLHUP， EPOLLERR
                 //LOG_STDERR1(errno,"CSocekt::ProcessEpollEvents()中revents&EPOLLOUT成立并且revents & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)成立,event=%ud。",revents); 
 
-                //我们只有投递了 写事件，但对端断开时，程序流程才走到这里，投递了写事件意味着 iThrowsendCount标记肯定被+1了，这里我们减回
-                --pConn->iThrowsendCount;                 
+                //我们只有投递了写事件，但对端断开时，程序流程才走到这里，投递了写事件意味着 iThrowsendCount 肯定被+1了，这里做收尾：
+                if(pConn->pcSendMemery != NULL) //挂着的发送缓冲要释放，否则恶意断连可造成内存积压
+                {
+                    CMemory::GetInstance()->FreeMemory(pConn->pcSendMemery);
+                    pConn->pcSendMemery = NULL;
+                }
+                pConn->pcSendBuff = NULL;
+                pConn->iSendLen = 0;
+                pConn->iThrowsendCount = 0; //直接归零，防止与其他路径的递减叠加造成负数
+                KickConnection(pConn); //对端已断开/出错，主动关闭该连接，不再等recv侧来发现
             }
             else
             {
@@ -1190,6 +1198,7 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
                     pMemory->FreeMemory(pConn->pcSendMemery);  //释放内存
                     pConn->pcSendMemery = NULL;
                     pConn->iThrowsendCount = 0;  //这行其实可以没有，因此此时此刻这东西就是=0的    
+                    pSocket->KickConnection(pConn); //send返回0，按对端关闭处理，主动踢掉连接
                     continue;
                 }
 
@@ -1219,6 +1228,7 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
                     pMemory->FreeMemory(pConn->pcSendMemery);  //释放内存
                     pConn->pcSendMemery = NULL;
                     pConn->iThrowsendCount = 0;  //这行其实可以没有，因此此时此刻这东西就是=0的  
+                    pSocket->KickConnection(pConn); //-2：对端断开，主动踢掉连接，不再等待recv侧来发现
                     continue;
                 }
 
