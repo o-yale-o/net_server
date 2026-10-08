@@ -1,0 +1,13 @@
+# 编译产物
+nginx
+*.o
+*.gch
+app/dep/
+app/link_obj/
+
+# 日志
+logs/
+*.log
+
+# 编辑器
+.vscode/

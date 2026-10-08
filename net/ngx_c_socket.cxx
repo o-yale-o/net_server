@@ -364,7 +364,6 @@ bool CSocekt::NgxOpenListeningSockets()
         //{
         //    LOG_STDERR1(errno,"setsockopt(SO_REUSEPORT)成功");
         //}
-        
 
         //设置该socket为非阻塞
         if(SetNonBlocking(iSocket) == false)
@@ -1022,7 +1021,6 @@ int CSocekt::ProcessEpollEvents(int iTimeOut)
         
         if(revents & EPOLLOUT) //如果是写事件【对方关闭连接也触发这个，再研究。。。。。。】，注意上边的 if(revents & (EPOLLERR|EPOLLHUP))  revents |= EPOLLIN|EPOLLOUT; 读写标记都给加上了
         {
-            //LOG_STDERR1(errno,"22222222222222222222.");
             if(revents & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) //客户端关闭，如果服务器端挂着一个写通知事件，则这里个条件是可能成立的
             {
                 //EPOLLERR：对应的连接发生错误                     8     = 1000 

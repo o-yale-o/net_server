@@ -157,12 +157,12 @@ void CSocekt::OnAccept(lpngx_connection_t pConnOld)
 
         //成功的拿到了连接池中的一个连接
         memcpy(&pConnNew->s_sockaddr,&sockaddrRemote,iSockaddrRemoteLen);  //拷贝客户端地址到连接对象【要转成字符串ip地址参考函数ngx_sock_ntop()】
-        //{
-        //    //测试将收到的地址弄成字符串，格式形如"192.168.1.126:40904"或者"192.168.1.126"
-        //    u_char ipaddr[100]; memset(ipaddr,0,sizeof(ipaddr));
-        //    ngx_sock_ntop(&pConnNew->s_sockaddr,1,ipaddr,sizeof(ipaddr)-10); //宽度给小点
-        //   LOG_STDERR("ip信息为%iSockNew\n",ipaddr);
-        //}
+        {
+           //测试将收到的地址弄成字符串，格式形如"192.168.1.126:40904"或者"192.168.1.126"
+           u_char ipaddr[100]; memset(ipaddr,0,sizeof(ipaddr));
+           ngx_sock_ntop(&pConnNew->s_sockaddr,1,ipaddr,sizeof(ipaddr)-10); //宽度给小点
+          LOG_INFO("客户端信息[%s]",ipaddr);
+        }
 
         if(!bIsCanUseAccept4)
         {
