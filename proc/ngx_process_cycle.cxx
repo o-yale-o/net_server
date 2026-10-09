@@ -30,6 +30,7 @@ static pid_t g_arrWorkerPid[_MAX_WORKER_PROCESSES_];  //各槽位worker的pid，
 static int   g_iWorkerProcNum = 0;            //配置要求的worker数量
 
 static void NgxRespawnMissingWorkers();       //补齐退出的worker
+static void NgxReloadWorkers();               //SIGHUP: 重载配置并调整worker数量
 static void NgxMasterShutdownWorkers();       //master退出时通知所有worker并等待收尸
 
 /******************************************************************************************
@@ -141,6 +142,12 @@ void NgxMasterProcessCycle()
         {
             g_atomicHaveSigCHLD = 0;  //清除标记
             NgxRespawnMissingWorkers(); //把退出worker的槽位重新fork补齐
+        }
+
+        if(g_iReloadEvent != 0) //收到SIGHUP: 重载配置并按新配置调整worker数量
+        {
+            g_iReloadEvent = 0;  //清除标记
+            NgxReloadWorkers();
         }
 
         sleep(1); //休息1秒        
@@ -351,6 +358,66 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
     
     //....将来再扩充代码
     //....
+    return;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: SIGHUP重载: 重新读配置文件, 按新WorkerProcesses数量扩容/缩容worker
+          [缩容的worker走优雅退出; 监听端口等其余配置项将在worker重启后生效]
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: CConfig::Load(重载安全: 失败保留旧配置)
+被引用于: NgxMasterProcessCycle()
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+static void NgxReloadWorkers()
+{
+    LOG_INFO("master进程开始重载配置文件...");
+    CConfig *pConfig = CConfig::GetInstance();
+    if(pConfig->Load("nginx.conf") == false)
+    {
+        LOG_ALERT("重载配置失败, 继续使用旧配置运行!");
+        return;
+    }
+    LOG_INFO("配置文件重载成功!");
+
+    //(1)按新配置计算目标worker数量
+    int iNewNum = pConfig->GetIntDefault("WorkerProcesses",1);
+    if(iNewNum > _MAX_WORKER_PROCESSES_)
+        iNewNum = _MAX_WORKER_PROCESSES_;
+
+    int iOldNum = g_iWorkerProcNum;
+    if(iNewNum == iOldNum)
+    {
+        LOG_INFO("WorkerProcesses未变化(%d), 其余配置项将在worker重启后生效!", iNewNum);
+        return;
+    }
+
+    if(iNewNum > iOldNum)
+    {
+        //(2)扩容: 直接把新增槽位的worker fork出来
+        for(int i = iOldNum; i < iNewNum; i++)
+        {
+            g_arrWorkerPid[i] = -1;
+            if(NgxSpawnProcess(i, "worker process") > 0)
+                LOG_INFO("扩容: 新增worker[i=%d]已启动!", i);
+        }
+        g_iWorkerProcNum = iNewNum;
+        return;
+    }
+
+    //(3)缩容: 先缩减计数(防止SIGCHLD误复活), 再通知多余worker优雅退出
+    for(int i = iNewNum; i < iOldNum; i++)
+    {
+        if(g_arrWorkerPid[i] > 0)
+        {
+            kill(g_arrWorkerPid[i], SIGTERM);
+            LOG_INFO("缩容: 通知多余worker[i=%d,pid=%P]退出!", i, g_arrWorkerPid[i]);
+        }        
+    }
+    g_iWorkerProcNum = iNewNum;
     return;
 }
 

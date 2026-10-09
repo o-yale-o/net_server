@@ -36,6 +36,7 @@ pid_t   g_CurrPID;      //当前进程的pid
 pid_t   g_ParentPID;    //父进程的pid
 int     g_iProcessType; //进程类型，比如master,worker进程等: master进程、work进程
 sig_atomic_t g_iStopEvent;   //退出标记  0-不退出 1-退出（信号处理器与主循环共享）
+sig_atomic_t g_iReloadEvent; //重载标记  0-否 1-收到SIGHUP待重载（仅master使用）
 
 sig_atomic_t  g_atomicHaveSigCHLD;         //标记子进程状态变化[一般是子进程发来SIGCHLD信号表示退出],sig_atomic_t:系统定义的类型：访问或改变这些变量需要在计算机的一条指令内完成
                                    //一般等价于int【通常情况下，int类型的变量通常是原子访问的，也可以认为 sig_atomic_t就是int类型的数据】                                   
@@ -82,6 +83,7 @@ int main(int argc, char *const *argv)
     g_structNgxLog.fd = -1;                  //-1：表示日志文件尚未打开；因为后边ngx_log_stderr要用所以这里先给-1
     g_iProcessType = NGX_PROCESS_MASTER; //先标记本进程是master进程
     g_atomicHaveSigCHLD = 0;                     //标记子进程没有发生变化
+    g_iReloadEvent      = 0;                     //标记无待重载
    
     //(2)初始化失败，就要直接退出的
     //配置文件必须最先要，后边初始化啥的都用，所以先把配置读出来，供后续使用 

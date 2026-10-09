@@ -139,6 +139,10 @@ static void OnSignalHandler(int iSigno, siginfo_t *pSignfo, void *pvUContext)
             g_atomicHaveSigCHLD = 1;  //标记子进程状态变化，master主循环中据此补齐worker
             break;
 
+        case SIGHUP:   //终端断开【守护进程常用于通知重载配置文件】
+            g_iReloadEvent = 1;  //master主循环中消费: 重新读配置并调整worker数量
+            break;
+
         case SIGINT:   //终端中断符
         case SIGTERM:  //终止
         case SIGQUIT:  //终端退出符

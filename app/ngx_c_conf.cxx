@@ -49,6 +49,9 @@ bool CConfig::Load(const char *pconfName)
     if(fp == NULL)
         return false;
 
+    //æ¯æSIGHUPéè½½: åè§£æå°ä¸´æ¶è¡¨, å¨é¨æååææ¿æ¢æ§è¡¨; å¤±è´¥åä¿çæ§éç½®ç»§ç»­è¿è¡
+    std::vector<LPCConfItem> listTmp;
+
     //每一行配置文件读出来都放这里
     char  linebuf[501];   //每行配置都不要太长，保持<500字符内，防止出现问题
     
@@ -97,9 +100,17 @@ bool CConfig::Load(const char *pconfName)
 			Ltrim(p_confitem->ItemContent);
 
             //printf("itemname=%s | itemcontent=%s\n",p_confitem->ItemName,p_confitem->ItemContent);            
-            m_ConfigItemList.push_back(p_confitem);  //内存要释放，因为这里是new出来的 
+            listTmp.push_back(p_confitem);  //先入临时表
         } //end if
     } //end while(!feof(fp)) 
+
+    //解析成功: 释放旧配置项并替换为新表(重载失败则保留旧配置)
+    for(std::vector<LPCConfItem>::iterator pos = m_ConfigItemList.begin();
+        pos != m_ConfigItemList.end(); ++pos)
+    {
+        delete (*pos);
+    }
+    m_ConfigItemList.swap(listTmp);
 
     fclose(fp); //这步不可忘记
     return true;

@@ -80,7 +80,15 @@ python3 test_broadcast.py     # 5用例: 多人群发/发送者不收/二次广�
 
 覆盖命令10(广播): 认证+防重放+排除自己+全员投递。
 
-## 8. 一键回归（全部测试）
+## 8. 配置热重载测试
+
+```bash
+./test_reload.sh     # 一键: SIGHUP未变重载/扩容2→3/缩容3→1/全程服务不中断/优雅退出
+```
+
+覆盖 SIGHUP 重载链路: 信号置位 → master 重读配置(失败保留旧配置) → WorkerProcesses 扩缩容 → 缩容 worker 优雅退出。
+
+## 9. 一键回归（全部测试）
 
 ```bash
 cd test
