@@ -90,7 +90,39 @@ bool CSocekt::Initialize()
     if(m_iUseReusePort == 1)
     {
         //SO_REUSEPORT模式: 监听socket由各worker在EpollInit()中自行创建【内核按四元组哈希分流, 无惊群】
-        //master此时不创建, 也无法提前检测端口占用——若端口被占, worker会启动失败并在日志中报告
+        //但参考nginx官方(init cycle阶段仍bind): master启动期先用探测socket绑定各端口后立即关闭,
+        //以实现【快速失败】——端口被占时master启动即报错退出, 而不是等worker反复崩溃形成重启风暴
+        CConfig *pConfig = CConfig::GetInstance();  //获取配置单例(读端口数用)
+        int iPortCnt = pConfig->GetIntDefault("ListenPortCount",1);
+        for(int i = 0; i < iPortCnt; i++)
+        {
+            char szTmp[50];
+            snprintf(szTmp,sizeof(szTmp),"ListenPort%d",i);
+            int iPort = pConfig->GetIntDefault(szTmp,10000);
+
+            int iProbeFd = socket(AF_INET,SOCK_STREAM,0);
+            if(iProbeFd == -1)
+            {
+                LOG_STDERR1(errno,"[reuseport探测]socket()失败!");
+                return false;
+            }
+            int iOpt = 1;
+            setsockopt(iProbeFd,SOL_SOCKET, SO_REUSEADDR,(const void *)&iOpt,sizeof(iOpt));
+            setsockopt(iProbeFd,SOL_SOCKET, SO_REUSEPORT,(const void *)&iOpt,sizeof(iOpt));
+
+            struct sockaddr_in saProbe;
+            memset(&saProbe,0,sizeof(saProbe));
+            saProbe.sin_family = AF_INET;
+            saProbe.sin_addr.s_addr = htonl(INADDR_ANY);
+            saProbe.sin_port = htons((in_port_t)iPort);
+            if(bind(iProbeFd,(struct sockaddr *)&saProbe,sizeof(saProbe)) == -1)
+            {
+                LOG_STDERR1(errno,"[reuseport探测]端口%d已被占用, master启动失败!",iPort);
+                close(iProbeFd);
+                return false;  //快速失败: 端口冲突, master启动即退出
+            }
+            close(iProbeFd);  //探测完成立即关闭, 把端口留给worker们
+        }
     }
     else
     {
