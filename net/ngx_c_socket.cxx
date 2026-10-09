@@ -87,8 +87,16 @@ CSocekt::CSocekt()
 bool CSocekt::Initialize()
 {
     ReadConf();  //读配置项
-    if(NgxOpenListeningSockets() == false)  //打开监听端口    
-        return false;  
+    if(m_iUseReusePort == 1)
+    {
+        //SO_REUSEPORT模式: 监听socket由各worker在EpollInit()中自行创建【内核按四元组哈希分流, 无惊群】
+        //master此时不创建, 也无法提前检测端口占用——若端口被占, worker会启动失败并在日志中报告
+    }
+    else
+    {
+        if(NgxOpenListeningSockets() == false)  //打开监听端口【传统模式: master创建, fork继承给worker】    
+            return false;  
+    }
     return true;
 }
 
@@ -298,7 +306,8 @@ void CSocekt::ReadConf()
     m_ifTimeOutKick           = pConfig->GetIntDefault("Sock_TimeOutKick",0);                                   //当时间到达Sock_MaxWaitTime指定的时间时，直接把客户端踢出去，只有当Sock_WaitTimeEnable = 1时，本项才有用 
 
     m_iIsCheckFloodAttack          = pConfig->GetIntDefault("Sock_FloodAttackKickEnable",0);                          //Flood攻击检测是否开启,1：开启   0：不开启
-    m_iUseEpollET                  = pConfig->GetIntDefault("UseEpollET",0);                                          //epoll触发模式: 0=LT水平触发(默认) 1=ET边缘触发
+    m_iUseEpollET                  = pConfig->GetIntDefault("UseEpollET",0);
+    m_iUseReusePort                = pConfig->GetIntDefault("UseReusePort",0);                                        //SO_REUSEPORT: 0=master监听worker继承(默认) 1=各worker独立监听                                          //epoll触发模式: 0=LT水平触发(默认) 1=ET边缘触发
 	m_iCheckFloodAttackInterval      = pConfig->GetIntDefault("Sock_FloodTimeInterval",100);                            //表示每次收到数据包的时间间隔是100(毫秒)
 	m_iFloodKickCount         = pConfig->GetIntDefault("Sock_FloodKickCounter",10);                              //累积多少次踢出此人
 
@@ -667,6 +676,14 @@ void CSocekt::PrintTDInfo()
 ******************************************************************************************/
 int CSocekt::EpollInit()
 {
+    //SO_REUSEPORT模式: 各worker在此自行创建监听socket(内核按四元组哈希分流新连接, 无惊群)
+    //【必须在注册epoll事件之前完成; socket创建时已无条件设置SO_REUSEPORT+SO_REUSEADDR】
+    if(m_iUseReusePort == 1 && m_listListenSocket.empty())
+    {
+        if(NgxOpenListeningSockets() == false)
+            return 0; //监听socket创建失败(日志已记)
+    }
+
     //(1)很多内核版本不处理epoll_create的参数，只要该参数>0即可
     //创建一个epoll对象，创建了一个红黑树，还创建了一个双向链表
     m_hEpoll = epoll_create(m_iWorkerMaxConnection);   //直接以epoll连接的最大项数为参数，肯定是>0的； 

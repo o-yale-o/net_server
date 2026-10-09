@@ -249,6 +249,7 @@ private:
 
 	//网络安全相关
 	int             m_iUseEpollET;               //epoll触发模式 0:LT水平触发(默认) 1:ET边缘触发
+	int             m_iUseReusePort;             //SO_REUSEPORT 0:master创建监听socket由worker继承(默认) 1:各worker独立监听
 	int             m_iIsCheckFloodAttack;       //Flood攻击检测是否开启,1：开启   0：不开启
 	unsigned int    m_iCheckFloodAttackInterval; //表示每次收到数据包的时间间隔是100(毫秒)
 	int             m_iFloodKickCount;           //累积多少次踢出此人
