@@ -8,6 +8,7 @@ WORKERS=${2:-1}
 FLOOD_MS=${3:-100}
 FLOOD_KICK=${4:-10}
 RECY_WAIT=${5:-3}   # 连接延迟回收等待秒数(测试用缩短，默认正式值150)
+ET_MODE=${6:-0}     # epoll触发模式: 0=LT(默认) 1=ET边缘触发
 
 PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ ! -x "$PROJ_ROOT/nginx" ]; then
@@ -24,6 +25,7 @@ sed -e "s/^Daemon = 1/Daemon = 0/" \
     -e "s/^Sock_FloodTimeInterval = .*/Sock_FloodTimeInterval = $FLOOD_MS/" \
     -e "s/^Sock_FloodKickCounter = .*/Sock_FloodKickCounter = $FLOOD_KICK/" \
     -e "s/^Sock_RecyConnectionWaitTime = .*/Sock_RecyConnectionWaitTime = $RECY_WAIT/" \
+    -e "s/^UseEpollET = .*/UseEpollET = $ET_MODE/" \
     "$PROJ_ROOT/nginx.conf" > "$DIR/nginx.conf"
 
 cd "$DIR"

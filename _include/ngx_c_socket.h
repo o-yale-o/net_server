@@ -248,6 +248,7 @@ private:
 	std::atomic<int>               m_iOnlineUserCount;   //当前在线用户数统计
 
 	//网络安全相关
+	int             m_iUseEpollET;               //epoll触发模式 0:LT水平触发(默认) 1:ET边缘触发
 	int             m_iIsCheckFloodAttack;       //Flood攻击检测是否开启,1：开启   0：不开启
 	unsigned int    m_iCheckFloodAttackInterval; //表示每次收到数据包的时间间隔是100(毫秒)
 	int             m_iFloodKickCount;           //累积多少次踢出此人

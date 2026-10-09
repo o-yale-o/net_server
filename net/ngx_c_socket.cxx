@@ -298,6 +298,7 @@ void CSocekt::ReadConf()
     m_ifTimeOutKick           = pConfig->GetIntDefault("Sock_TimeOutKick",0);                                   //当时间到达Sock_MaxWaitTime指定的时间时，直接把客户端踢出去，只有当Sock_WaitTimeEnable = 1时，本项才有用 
 
     m_iIsCheckFloodAttack          = pConfig->GetIntDefault("Sock_FloodAttackKickEnable",0);                          //Flood攻击检测是否开启,1：开启   0：不开启
+    m_iUseEpollET                  = pConfig->GetIntDefault("UseEpollET",0);                                          //epoll触发模式: 0=LT水平触发(默认) 1=ET边缘触发
 	m_iCheckFloodAttackInterval      = pConfig->GetIntDefault("Sock_FloodTimeInterval",100);                            //表示每次收到数据包的时间间隔是100(毫秒)
 	m_iFloodKickCount         = pConfig->GetIntDefault("Sock_FloodKickCounter",10);                              //累积多少次踢出此人
 
@@ -854,6 +855,12 @@ int CSocekt::OperateEpollEvent(int fd, uint32_t iEventType, uint32_t iEventFlag,
         //ev.data.ptr = (void *)pConn;
         ev.events = iEventFlag;      //既然是增加节点，则不管原来是啥标记
         pConn->events = iEventFlag;  //这个连接本身也记录这个标记
+        if(m_iUseEpollET == 1)
+        {
+            //边缘触发模式: 注册时附加EPOLLET【须配合OnRead/OnWrite/OnAccept的循环收发代码, 否则会丢事件导致连接假死】
+            ev.events |= EPOLLET;
+            pConn->events |= EPOLLET;
+        }
     }
     else if(iEventType == EPOLL_CTL_MOD)
     {
@@ -1323,3 +1330,4 @@ void* CSocekt::ServerSendQueueThread(void* pvThreadData)
     
     return (void*)0;
 }
+
