@@ -71,7 +71,16 @@ python3 test_onlineuser.py                # 登记登录/重复登录覆盖/断�
 
 注意: 用户注销发生在连接被延迟回收时(`Sock_RecyConnectionWaitTime`秒后)，所以断开后人数回落有最多3秒延迟。
 
-## 7. 一键回归（全部测试）
+## 7. 广播消息测试
+
+```bash
+./run_server_for_test.sh 18080 2
+python3 test_broadcast.py     # 5用例: 多人群发/发送者不收/二次广播
+```
+
+覆盖命令10(广播): 认证+防重放+排除自己+全员投递。
+
+## 8. 一键回归（全部测试）
 
 ```bash
 cd test

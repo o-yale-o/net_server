@@ -33,9 +33,10 @@ public:
 
 	bool AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorkerPid, uint64_t uiToken); //登记上线用户(带会话令牌; 重复登录同一uid则覆盖并刷新令牌)
 	bool CheckUserSeqToken(uint64_t uiUid, uint64_t uiToken, uint64_t uiSeq);  //认证+防重放: 令牌匹配且序号严格递增才通过
-	void RemoveUser(uint64_t uiUid);                                       //注销下线用户
+	void RemoveUser(uint64_t uiUid, uint64_t uiConnSeq);                   //注销下线用户[须携带登录时的连接序号,防止误删同名新登录]
 	bool FindUser(uint64_t uiUid, uint64_t &oUiConnSeq, pid_t &oIWorkerPid); //查找用户是否在线
 	int  GetOnlineCount();                                                 //当前在线总人数(全局)
+	void GetAllOnlineUids(uint64_t *pUidArr, int iArrSize, int &oUiCount); //枚举全部在线uid[广播用]
 
 private:
 	bool Lock();

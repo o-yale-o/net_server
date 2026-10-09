@@ -51,6 +51,9 @@ static const handler statusHandler[] =
     &CLogicSocket::_HandleLogIn,                           //【6】：实现具体的登录功能
     &CLogicSocket::_HandleWhoOnline,                        //【7】：查询全局在线人数
     &CLogicSocket::_HandleSendMsg,                          //【8】：点对点消息(需认证+防重放)
+    NULL,                                                   //【9】：保留(服务器投递方向命令字,客户端不发送)
+    NULL,                                                   //【10】：保留
+    &CLogicSocket::_HandleBroadcast,                        //【11】：广播消息给全部其他在线用户(需认证+防重放)
     //......其他待扩展，比如实现攻击功能，实现加血功能等等；
 
 
@@ -410,7 +413,7 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
 
     //(6)登录成功: 登记到全局在线用户表(共享内存,跨worker可见)【uid取用户名的CRC32】
     uint64_t uiUid = (uint64_t)(uint32_t)p_crc32->Get_CRC((unsigned char *)p_RecvInfo->username,strlen(p_RecvInfo->username)); //先转uint32防止符号扩展
-    if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->iCurrSequence,getpid(),uiToken) == true)
+    if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->uiConnId,getpid(),uiToken) == true)
     {
         pConn->uiOnlineUid = uiUid;  //记录到连接上，连接回收时自动注销
         LOG_INFO("用户[%s]登录成功,uid=%Lu,已登记到在线用户表!",p_RecvInfo->username,uiUid);
@@ -517,6 +520,64 @@ bool CLogicSocket::_HandleSendMsg(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pM
 
 /******************************************************************************************
 函数原型: 
+/******************************************************************************************
+函数原型: 
+功能描述: [广播消息]业务逻辑【命令9】: 包体=token(8)+seq(8)+text(200)
+          认证+防重放通过后, 经跨worker信箱投递给除自己外的全部在线用户
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: COnlineUserTable / CMsgRoute
+被引用于: statusHandler[]命令表【9】
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CLogicSocket::_HandleBroadcast(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)
+{
+    if(pConn->uiOnlineUid == 0)  //未登录用户不允许使用该命令
+        return false;
+
+    uint64_t uiUidSelf = pConn->uiOnlineUid;
+
+    //(1)包体校验: 认证字段(16字节) + 文本区(200字节)【复用STRUCT_SENDMSG布局: 8保留+200文本】
+    int iNeedLen = 16 + sizeof(STRUCT_RECVMSG);
+    if(pPkgBody == NULL || iBodyLength != iNeedLen)
+        return false;
+
+    //(2)认证+防重放
+    uint64_t uiToken, uiSeq;
+    memcpy(&uiToken,pPkgBody,8);
+    memcpy(&uiSeq,pPkgBody+8,8);
+    if(COnlineUserTable::GetInstance()->CheckUserSeqToken(uiUidSelf,uiToken,uiSeq) == false)
+    {
+        LOG_STDERR("CLogicSocket::_HandleBroadcast()认证或防重放校验失败,uid=%Lu!",uiUidSelf);
+        return false;
+    }
+
+    //(3)广播内容
+    LPSTRUCT_SENDMSG pMsg = (LPSTRUCT_SENDMSG)(pPkgBody+16);
+
+    //(4)枚举全部在线uid, 逐个投入信箱(排除自己)
+    uint64_t arrUids[256];
+    int iCount = 0;
+    COnlineUserTable::GetInstance()->GetAllOnlineUids(arrUids,256,iCount);
+
+    STRUCT_RECVMSG recvInfo;
+    memset(&recvInfo,0,sizeof(recvInfo));
+    recvInfo.uiFromUid = uiUidSelf;
+    memcpy(recvInfo.acText,pMsg->acText,sizeof(pMsg->acText));
+
+    int iSent = 0;
+    for(int i = 0; i < iCount; i++)
+    {
+        if(arrUids[i] == uiUidSelf)  //跳过自己
+            continue;
+        if(CMsgRoute::GetInstance()->PutMsg(arrUids[i],_CMD_RECVMSG,(const char *)&recvInfo,sizeof(recvInfo)) == true)
+            iSent++;
+    }
+    LOG_INFO("用户[uid=%Lu]广播消息,在线%d人,实际投递%d人!",uiUidSelf,iCount,iSent);
+    return true;
+}
+
 /******************************************************************************************
 函数原型: 
 功能描述: 接收并处理客户端发送过来的ping包

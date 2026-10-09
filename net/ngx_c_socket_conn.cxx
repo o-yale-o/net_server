@@ -22,6 +22,7 @@
 #include "ngx_c_memory.h"
 #include "ngx_c_lockmutex.h"
 #include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
+#include <atomic>              //连接分配ID计数器
 
 /******************************************************************************************
 函数原型: 
@@ -71,9 +72,12 @@ ngx_connection_s::~ngx_connection_s()
 修改记录: 
         修改日期    修改人          修改标记        新版本号    修改原因
 ******************************************************************************************/
+static std::atomic<uint64_t> s_uiConnIdCounter(0);  //连接分配ID计数器(进程内唯一, 分配时取号后不可变)
+
 void ngx_connection_s::InitBeforeUse()
 {
     ++iCurrSequence;
+    uiConnId = ++s_uiConnIdCounter;   //取不可变的分配ID: 在线表注销匹配用(连接生命周期内不变)
 
     fd         = -1;                        //开始先给-1
     cCurrStat  = PKG_HD_INIT;              //收包状态处于 初始状态，准备接收数据包头【状态机】
@@ -109,7 +113,7 @@ void ngx_connection_s::PutOneToFree()
     ++iCurrSequence;   
     if(uiOnlineUid != 0) //连接断开: 把该用户从全局在线用户表中注销【这里是所有连接回收的唯一汇聚点】
     {
-        COnlineUserTable::GetInstance()->RemoveUser(uiOnlineUid);
+        COnlineUserTable::GetInstance()->RemoveUser(uiOnlineUid,uiConnId); //带不可变的分配ID: 同名用户新登录是新ID, 不会被误删
         uiOnlineUid = 0;
     }
     if(pcRecvMemery != NULL)//我们曾经给这个连接分配过接收数据的内存，则要释放内存

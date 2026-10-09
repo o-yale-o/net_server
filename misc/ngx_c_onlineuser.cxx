@@ -164,7 +164,7 @@ bool COnlineUserTable::AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorker
 功能描述: 注销下线用户(线性探测找到后移除，并对其后的探测聚簇做重哈希，保证后续查找链不断裂)
 参数说明:   uiUid   uint64_t   用户唯一标识
 ******************************************************************************************/
-void COnlineUserTable::RemoveUser(uint64_t uiUid)
+void COnlineUserTable::RemoveUser(uint64_t uiUid, uint64_t uiConnSeq)
 {
 	if(Lock() == false)
 		return;
@@ -180,6 +180,14 @@ void COnlineUserTable::RemoveUser(uint64_t uiUid)
 
 		if(pShm->items[idx].uiUid == uiUid)
 		{
+			if(pShm->items[idx].uiConnSeq != uiConnSeq)
+			{
+				LOG_INFO("[DEBUG]注销序号不符: 槽内seq=%Lu 传入seq=%Lu",pShm->items[idx].uiConnSeq,uiConnSeq);
+				//槽位里的连接序号与注销请求不符: 说明该uid已在新连接上重新登录,
+				//这条是"旧连接延迟回收"的注销请求, 绝不能误删新登录条目
+				Unlock();
+				return;
+			}
 			//找到: 移除并计数-1
 			pShm->items[idx].uiState = 0;
 			pShm->iOnlineCount--;
@@ -243,6 +251,33 @@ bool COnlineUserTable::CheckUserSeqToken(uint64_t uiUid, uint64_t uiToken, uint6
 
 	Unlock();
 	return bPass;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: 枚举全部在线uid【广播用】, 加锁遍历槽位收集
+参数说明:   pUidArr    出参: uid数组(调用方分配)
+            iArrSize   数组容量
+            oUiCount   出参: 实际收集到的uid个数
+******************************************************************************************/
+void COnlineUserTable::GetAllOnlineUids(uint64_t *pUidArr, int iArrSize, int &oUiCount)
+{
+	oUiCount = 0;
+	if(Lock() == false || pUidArr == NULL || iArrSize <= 0)
+		return;
+
+	ONLINE_USER_SHM *pShm = (ONLINE_USER_SHM *)m_pShm;
+	for(int i = 0; i < _TABLE_SIZE_ && oUiCount < iArrSize; i++)
+	{
+		if(pShm->items[i].uiState == 1)
+		{
+			pUidArr[oUiCount] = pShm->items[i].uiUid;
+			oUiCount++;
+		}
+	}
+
+	Unlock();
+	return;
 }
 
 /******************************************************************************************

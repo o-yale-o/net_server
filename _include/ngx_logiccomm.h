@@ -8,6 +8,8 @@
 #define _CMD_WHOONLINE  _CMD_START + 7   //查询全局在线人数【应答包体: int 在线人数】
 #define _CMD_SENDMSG    _CMD_START + 8   //客户端发消息给指定uid【需认证: 包体前16字节为token+seq】
 #define _CMD_RECVMSG    _CMD_START + 9   //服务器投递给目标用户的消息【服务器主动下发,包体=STRUCT_RECVMSG】
+#define _CMD_BROADCAST  _CMD_START + 11  //客户端发消息给全部其他在线用户【需认证: 包体=token+seq+text[200]】
+                                          //注: 9/10为服务器投递方向保留命令字, 客户端勿用
 
 //结构定义------------------------------------
 #pragma pack (1) //对齐方式,1字节对齐【结构之间成员不做任何字节对齐：紧密的排列在一起】
