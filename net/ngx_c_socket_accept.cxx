@@ -194,8 +194,22 @@ void CSocekt::OnAccept(lpngx_connection_t pConnOld)
         setsockopt(iSockNew, IPPROTO_TCP, TCP_NODELAY, &iNoDelay, sizeof(iNoDelay));
         //pConnNew->iWriteReady = 1;                    //标记可以写，新连接写事件肯定是ready的；【从连接池拿出一个连接时这个连接的所有成员都是0】            
         
-        pConnNew->pmfRead  = &CSocekt::OnRead;  //设置数据来时的读处理函数，其实官方 nginx 中是 ngx_http_wait_request_handler()
-        pConnNew->pmfWrite = &CSocekt::OnWrite; //设置数据发送时的写处理函数。
+        if(m_iUseTLS == 1)
+        {
+            //TLS模式: 创建SSL对象绑定fd, 读/写事件临时都路由到握手处理, 握手完成后再切回OnRead/OnWrite
+            pConnNew->pSSL = SSL_new(m_pSSLCtx);
+            if(pConnNew->pSSL == NULL)
+            {
+                LOG_STDERR("SSL_new()失败, 关闭该连接!");
+                CloseConnection(pConnNew);
+                return;
+            }
+            SSL_set_fd((SSL *)pConnNew->pSSL, iSockNew);
+            SSL_set_accept_state((SSL *)pConnNew->pSSL);  //服务端握手状态
+        }
+
+        pConnNew->pmfRead  = (m_iUseTLS == 1) ? &CSocekt::OnTLSHandshake : &CSocekt::OnRead;  //设置数据来时的读处理函数，其实官方 nginx 中是 ngx_http_wait_request_handler()
+        pConnNew->pmfWrite = (m_iUseTLS == 1) ? &CSocekt::OnTLSHandshake : &CSocekt::OnWrite; //设置数据发送时的写处理函数。
 
         //客户端应该主动发送第一次的数据，这里将读事件加入epoll监控，这样当客户端发送数据来时，会触发ngx_wait_request_handler()被ngx_epoll_process_events()调用        
         if(OperateEpollEvent(

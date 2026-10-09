@@ -108,6 +108,10 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放�
 
 ## 九、已知问题与改进方向（最新在前）
 
+**2025-10 第八轮**：新增 **TLS 加密传输**（排行榜任务4，`UseTLS` 默认 0 关闭——关闭时零开销、行为不变）。开启后（`UseTLS=1` + `TLSCertFile`/`TLSKeyFile`）：master 启动期创建 SSL_CTX 并加载证书（失败快速退出）；accept 后连接进入**非阻塞握手状态机**（`SSL_accept` 的 WANT_READ/WANT_WRITE 分别挂可读/可写事件，完成后切回 OnRead/OnWrite）；`ReadData`/`WriteData` 按 `pConn->pSSL` 分支 `SSL_read`/`SSL_write`（WANT_* 等价 EAGAIN）；连接回收时 `SSL_free`（挂接在唯一汇聚点 PutOneToFree）。证书支持自签名（测试证书由 run_server_for_test.sh 自动生成到临时目录）。实测 TLSv1.3：加密心跳/登录/在线查询全通，明文客户端连 TLS 端口被拒（防御生效）。
+
+价值：业务与业务逻辑代码零改动即可获得加密传输；风险备忘：①进程崩溃时已排队未落盘日志不丢但 TLS 会话中断属正常；②握手期间的连接占用内存（SSL 对象约几十KB）；③信号处理器内打日志的既有风险不变。
+
 **2025-10 第七轮**：新增 **SO_REUSEPORT 模式**（nginx.conf [Net] 段 `UseReusePort`，默认 0；需重启生效）。开启后每个 worker 在 EpollInit 时自行创建带 SO_REUSEPORT 的监听 socket——内核按四元组哈希把新连接直接分派到各 worker 独立的 accept 队列，**彻底消除惊群**（原架构为 master 创建单个监听 socket 由 worker 继承）。实测 2 worker 心跳压测 47243 请求/秒，accept 在两 worker 间均匀分布（2+2）；缩容/worker 退出时其监听 socket 随之关闭，不存在"死队列"。价值：多核扩展性与连接接入吞吐上限提升。风险备忘：需 Linux 3.9+；与 UseEpollET 正交可组合。master 启动期用探测 socket 对各端口做 bind 后立即关闭——端口被占时 master 启动即快速失败退出（参考 nginx init cycle 的 bind 检测），避免 worker 重启风暴（已实测：普通程序占用端口时 master 报错退出、零残留）。
 
 **2025-10 第六轮(第二步)**：新增 **UseEpollET 配置开关**（nginx.conf [Net] 段，默认 0=LT；需重启生效）。OnRead/OnWrite/OnAccept 的循环收发代码 LT/ET 两模式通用，注册事件按配置附加 EPOLLET。

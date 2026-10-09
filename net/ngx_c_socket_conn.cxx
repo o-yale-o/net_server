@@ -22,6 +22,7 @@
 #include "ngx_c_memory.h"
 #include "ngx_c_lockmutex.h"
 #include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
+#include <openssl/ssl.h>       //TLS连接对象释放(SSL_free)
 #include <atomic>              //连接分配ID计数器
 
 /******************************************************************************************
@@ -78,6 +79,7 @@ void ngx_connection_s::InitBeforeUse()
 {
     ++iCurrSequence;
     uiConnId = ++s_uiConnIdCounter;   //取不可变的分配ID: 在线表注销匹配用(连接生命周期内不变)
+    pSSL      = NULL;                 //TLS对象由accept路径创建(UseTLS=1时)
 
     fd         = -1;                        //开始先给-1
     cCurrStat  = PKG_HD_INIT;              //收包状态处于 初始状态，准备接收数据包头【状态机】
@@ -125,6 +127,11 @@ void ngx_connection_s::PutOneToFree()
     {
         CMemory::GetInstance()->FreeMemory(pcSendMemery);
         pcSendMemery = NULL;
+    }
+    if(pSSL != NULL) //TLS连接对象释放【连接回收唯一汇聚点, 握手未完成/已完成都覆盖】
+    {
+        SSL_free((SSL *)pSSL);
+        pSSL = NULL;
     }
 
     iThrowsendCount = 0;                              //设置不设置感觉都行         

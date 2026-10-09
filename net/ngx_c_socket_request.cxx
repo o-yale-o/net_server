@@ -174,6 +174,23 @@ ssize_t CSocekt::ReadData(lpngx_connection_t pConn,char *buff,ssize_t buflen)
 {
     ssize_t n;
     
+    if(pConn->pSSL != NULL)
+    {
+        //TLS连接: 用SSL_read读取(握手完成前不会走到这里——握手期间由OnTLSHandshake处理)
+        SSL *pSSL = (SSL *)pConn->pSSL;
+        n = SSL_read(pSSL, buff, buflen);
+        if(n <= 0)
+        {
+            int iSSLErr = SSL_get_error(pSSL, n);
+            if(iSSLErr == SSL_ERROR_WANT_READ || iSSLErr == SSL_ERROR_WANT_WRITE)
+                return -1;  //等价EAGAIN: 等下次事件驱动
+            //ZERO_RETURN=对端正常关闭; SYSCALL等按断开处理
+            KickConnection(pConn);
+            return -1;
+        }
+        return n; //收到有效数据
+    }
+
     n = recv(pConn->fd, buff, buflen, 0); //recv()系统函数， 最后一个参数flag，一般为0；     
     if(n == 0)
     {
@@ -375,6 +392,19 @@ ssize_t CSocekt::WriteData(lpngx_connection_t c,char *buff,ssize_t size)  //ssiz
 {
     //这里参考借鉴了官方nginx函数ngx_unix_send()的写法
     ssize_t   n;
+
+    if(c->pSSL != NULL)
+    {
+        //TLS连接: 用SSL_write发送; WANT_READ/WANT_WRITE等价EAGAIN(返回-1由调用方按缓冲区满处理)
+        SSL *pSSL = (SSL *)c->pSSL;
+        n = SSL_write(pSSL, buff, size);
+        if(n > 0)
+            return n;
+        int iSSLErr = SSL_get_error(pSSL, n);
+        if(iSSLErr == SSL_ERROR_WANT_READ || iSSLErr == SSL_ERROR_WANT_WRITE)
+            return -1;  //等价EAGAIN
+        return -2;  //对端断开/错误
+    }
 
     for ( ;; )
     {

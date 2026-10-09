@@ -87,6 +87,8 @@ CSocekt::CSocekt()
 bool CSocekt::Initialize()
 {
     ReadConf();  //读配置项
+    if(NgxSSLInit() == false)  //TLS上下文初始化[UseTLS=1时加载证书/私钥, 失败快速退出]
+        return false;
     if(m_iUseReusePort == 1)
     {
         //SO_REUSEPORT模式: 监听socket由各worker在EpollInit()中自行创建【内核按四元组哈希分流, 无惊群】
@@ -339,7 +341,14 @@ void CSocekt::ReadConf()
 
     m_iIsCheckFloodAttack          = pConfig->GetIntDefault("Sock_FloodAttackKickEnable",0);                          //Flood攻击检测是否开启,1：开启   0：不开启
     m_iUseEpollET                  = pConfig->GetIntDefault("UseEpollET",0);
-    m_iUseReusePort                = pConfig->GetIntDefault("UseReusePort",0);                                        //SO_REUSEPORT: 0=master监听worker继承(默认) 1=各worker独立监听                                          //epoll触发模式: 0=LT水平触发(默认) 1=ET边缘触发
+    m_iUseReusePort                = pConfig->GetIntDefault("UseReusePort",0);
+    m_iUseTLS                      = pConfig->GetIntDefault("UseTLS",0);                              //是否启用TLS: 0=否(默认)
+    memset(m_szTLSCertFile,0,sizeof(m_szTLSCertFile));
+    memset(m_szTLSKeyFile,0,sizeof(m_szTLSKeyFile));
+    const char *pCert = pConfig->GetString("TLSCertFile");
+    if(pCert != NULL) strncpy(m_szTLSCertFile,pCert,sizeof(m_szTLSCertFile)-1);
+    const char *pKey = pConfig->GetString("TLSKeyFile");
+    if(pKey != NULL) strncpy(m_szTLSKeyFile,pKey,sizeof(m_szTLSKeyFile)-1);                                        //SO_REUSEPORT: 0=master监听worker继承(默认) 1=各worker独立监听                                          //epoll触发模式: 0=LT水平触发(默认) 1=ET边缘触发
 	m_iCheckFloodAttackInterval      = pConfig->GetIntDefault("Sock_FloodTimeInterval",100);                            //表示每次收到数据包的时间间隔是100(毫秒)
 	m_iFloodKickCount         = pConfig->GetIntDefault("Sock_FloodKickCounter",10);                              //累积多少次踢出此人
 
@@ -1027,6 +1036,106 @@ bool CSocekt::DeliverRouteMsg(lpngx_connection_t pConnTarget, int iCmd, const ch
     }
     PushData2SendBuff(p_sendbuf);
     return true; //已投递
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: TLS上下文初始化【UseTLS=1时master启动期调用】: 创建SSL_CTX并加载证书/私钥
+          SSL_CTX在fork后被各worker只读共享(SSL_new可安全并发调用)
+参数说明:   无(读m_iUseTLS/m_szTLSCertFile/m_szTLSKeyFile)
+返 回 值: true=成功或未启用TLS; false=启用但初始化失败(调用方快速退出)
+被引用于: CSocekt::Initialize()
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CSocekt::NgxSSLInit()
+{
+    if(m_iUseTLS != 1)
+        return true;  //未启用TLS: 直接成功, 相关代码路径零开销
+
+    SSL_library_init();                 //初始化OpenSSL算法库
+    OpenSSL_add_all_algorithms();       //加载全部算法
+    SSL_load_error_strings();           //加载错误字符串(便于排查)
+
+    m_pSSLCtx = SSL_CTX_new(TLS_server_method());
+    if(m_pSSLCtx == NULL)
+    {
+        LOG_STDERR("SSL_CTX_new()失败, TLS无法启用!");
+        return false;
+    }
+    SSL_CTX_set_ecdh_auto(m_pSSLCtx, 1);
+
+    if(SSL_CTX_use_certificate_file(m_pSSLCtx, m_szTLSCertFile, SSL_FILETYPE_PEM) != 1)
+    {
+        LOG_STDERR("加载TLS证书失败[%s]!",m_szTLSCertFile);
+        return false;
+    }
+    if(SSL_CTX_use_PrivateKey_file(m_pSSLCtx, m_szTLSKeyFile, SSL_FILETYPE_PEM) != 1)
+    {
+        LOG_STDERR("加载TLS私钥失败[%s]!",m_szTLSKeyFile);
+        return false;
+    }
+    if(SSL_CTX_check_private_key(m_pSSLCtx) != 1)
+    {
+        LOG_STDERR("TLS私钥与证书不匹配!");
+        return false;
+    }
+
+    LOG_INFO("TLS初始化成功, 证书=%s, 私钥=%s。",m_szTLSCertFile,m_szTLSKeyFile);
+    return true;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: TLS握手处理【握手期间读/写事件都路由到这里】: 非阻塞SSL_accept,
+          WANT_READ/WANT_WRITE分别等待可读/可写事件, 完成后切回正常读写处理函数
+参数说明:   pConn   连接对象(其pSSL在accept时已创建并绑定fd)
+返 回 值: 无
+被引用于: accept时pmfRead/pmfWrite的临时指向
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+void CSocekt::OnTLSHandshake(lpngx_connection_t pConn)
+{
+    if(pConn->fd == -1)  //连接已被同批其他事件关闭, 防御性直接返回
+        return;
+
+    SSL *pSSL = (SSL *)pConn->pSSL;
+    if(pSSL == NULL)
+    {
+        KickConnection(pConn);
+        return;
+    }
+
+    int iRet = SSL_accept(pSSL);
+    if(iRet == 1)
+    {
+        //握手完成: 切回正常读写处理函数, 并复位事件为只读(去掉握手期间可能挂上的EPOLLOUT)
+        pConn->pmfRead  = &CSocekt::OnRead;
+        pConn->pmfWrite = &CSocekt::OnWrite;
+        OperateEpollEvent(pConn->fd, EPOLL_CTL_MOD, EPOLLOUT, 1, pConn);
+        LOG_INFO("TLS握手完成");
+        return;
+    }
+
+    int iErr = SSL_get_error(pSSL, iRet);
+    if(iErr == SSL_ERROR_WANT_READ)
+    {
+        //等待对端握手数据: 只需可读事件(去掉可能挂着的写事件)
+        OperateEpollEvent(pConn->fd, EPOLL_CTL_MOD, EPOLLOUT, 1, pConn);
+        return;
+    }
+    if(iErr == SSL_ERROR_WANT_WRITE)
+    {
+        //握手数据发不出去: 需要可写事件
+        OperateEpollEvent(pConn->fd, EPOLL_CTL_MOD, EPOLLOUT, 0, pConn);
+        return;
+    }
+
+    //真正的握手错误: 踢除连接(资源由延迟回收路径统一释放)
+    LOG_STDERR1(errno,"TLS握手失败, 踢除连接!");
+    KickConnection(pConn);
+    return;
 }
 
 /******************************************************************************************

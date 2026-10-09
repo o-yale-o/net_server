@@ -10,6 +10,7 @@ FLOOD_KICK=${4:-10}
 RECY_WAIT=${5:-3}   # 连接延迟回收等待秒数(测试用缩短，默认正式值150)
 ET_MODE=${6:-0}     # epoll触发模式: 0=LT(默认) 1=ET边缘触发
 USE_RP=${7:-0}     # SO_REUSEPORT: 0=传统master监听(默认) 1=各worker独立监听
+USE_TLS=${8:-0}     # TLS: 0=关闭(默认) 1=启用(自动生成自签名测试证书)
 
 PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ ! -x "$PROJ_ROOT/nginx" ]; then
@@ -28,9 +29,17 @@ sed -e "s/^Daemon = 1/Daemon = 0/" \
     -e "s/^Sock_RecyConnectionWaitTime = .*/Sock_RecyConnectionWaitTime = $RECY_WAIT/" \
     -e "s/^UseEpollET = .*/UseEpollET = $ET_MODE/" \
     -e "s/^UseReusePort = .*/UseReusePort = $USE_RP/" \
+    -e "s/^UseTLS = .*/UseTLS = $USE_TLS/" \
     "$PROJ_ROOT/nginx.conf" > "$DIR/nginx.conf"
 
 cd "$DIR"
+if [ "$USE_TLS" = "1" ]; then
+    # 生成自签名测试证书(临时目录内, 不污染项目)
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=localhost" \
+        -keyout "$DIR/server.key" -out "$DIR/server.crt" >/dev/null 2>&1
+    sed -i "s|^TLSCertFile = .*|TLSCertFile = $DIR/server.crt|" "$DIR/nginx.conf"
+    sed -i "s|^TLSKeyFile = .*|TLSKeyFile = $DIR/server.key|" "$DIR/nginx.conf"
+fi
 nohup ./nginx > stdout.log 2>&1 &
 echo $! > "$DIR/master.pid"
 sleep 2

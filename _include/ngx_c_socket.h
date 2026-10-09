@@ -13,7 +13,8 @@
 #pragma once 
 
 #include <vector>       //vector
-#include <list>         //list
+#include <list>
+#include <openssl/ssl.h>   //TLS支持(UseTLS=1时启用; 链接-lssl -lcrypto)         //list
 #include <sys/epoll.h>  //epoll
 #include <sys/socket.h>
 #include <pthread.h>    //多线程
@@ -91,6 +92,7 @@ struct ngx_connection_s
 	//和心跳包有关
 	time_t                    timeLastPing;     //上次ping的时间【上次发送心跳包的事件】
 
+	SSL                       *pSSL;              //TLS连接对象(UseTLS=1时accept后创建, 握手完成后用于SSL_read/SSL_write)
 	//和网络安全有关	
 	uint64_t                  uiTimeLastFloodKick;  //Flood攻击上次收到包的时间
 	uint64_t                  uiOnlineUid;      //登录成功后记录的在线用户uid(0=未登录)，连接回收时用于从全局在线用户表注销
@@ -146,6 +148,8 @@ private:
 
 	//一些业务处理函数handler
 	void OnAccept(lpngx_connection_t pConnOld);     //(监听socket【读】时间出发)有新连接到来
+	bool NgxSSLInit();                              //TLS上下文初始化[UseTLS=1时master启动期调用, 失败快速退出]
+	void OnTLSHandshake(lpngx_connection_t pConn);  //TLS握手处理(握手期间读/写事件都路由到这里, 完成后切回OnRead/OnWrite)
 	void OnRead(lpngx_connection_t pConn);          //(数据来由Epoll触发)读响应函数[批量循环包装]
 	void OnReadOnce(lpngx_connection_t pConn);      //单次读取+收包状态机处理[由OnRead循环调用]
 	void OnWrite(lpngx_connection_t pConn);         //(可以发送时由Epoll触发)写响应函数
@@ -250,6 +254,10 @@ private:
 	//网络安全相关
 	int             m_iUseEpollET;               //epoll触发模式 0:LT水平触发(默认) 1:ET边缘触发
 	int             m_iUseReusePort;             //SO_REUSEPORT 0:master创建监听socket由worker继承(默认) 1:各worker独立监听
+	int             m_iUseTLS;                   //是否启用TLS 0:否(默认,零开销) 1:是(需证书/私钥)
+	char            m_szTLSCertFile[256];        //TLS证书文件路径(PEM)
+	char            m_szTLSKeyFile[256];         //TLS私钥文件路径(PEM)
+	SSL_CTX         *m_pSSLCtx;                  //TLS服务端上下文(master创建, fork继承只读使用)
 	int             m_iIsCheckFloodAttack;       //Flood攻击检测是否开启,1：开启   0：不开启
 	unsigned int    m_iCheckFloodAttackInterval; //表示每次收到数据包的时间间隔是100(毫秒)
 	int             m_iFloodKickCount;           //累积多少次踢出此人
