@@ -98,8 +98,33 @@ python3 test_tls.py          # 4用例: TLSv1.3握手/加密心跳/加密登录+
 
 覆盖 SIGHUP 重载链路: 信号置位 → master 重读配置(失败保留旧配置) → WorkerProcesses 扩缩容 → 缩容 worker 优雅退出。
 
-## 10. 一键回归（全部测试）
+## 10. 全量回归（一键）
 
+```bash
+./full_regression.sh
+```
+
+**回归矩阵**（一个脚本跑完，汇总 PASS/FAIL，任一失败退出码非 0）：
+
+| 矩阵 | 配置 | 覆盖用例 |
+|------|------|----------|
+| 1 | LT + 传统监听（默认） | smoke / pushmsg / broadcast / reconnect / perf |
+| 2 | ET 边缘触发 | smoke / pushmsg / perf |
+| 3 | REUSEPORT 独立监听 | smoke / pushmsg / perf |
+| 4 | TLS 加密 | test_tls |
+| 独立实例 | 自管服务器 | onlineuser / lifecycle / reload |
+
+**框架性说明（新增/修改测试时必读）**：
+- `full_regression.sh` 会 `cd` 到 test 目录执行，所有测试脚本在 test 目录为工作目录的假设下编写；
+- **共享服务器类测试**（smoke/pushmsg/broadcast/reconnect/perf）共用同一个临时服务器实例，按矩阵顺序执行；**自管服务器类测试**（onlineuser/lifecycle/reload）自行启停实例，与共享实例互不干扰；
+- 测试断言应尽量**相对化**（如"登录前后人数差"），避免依赖"初始状态为空"——共享服务器上可能有前一测试的延迟回收残留（回收窗口 `Sock_RecyConnectionWaitTime` 内条目仍在在线表中）；
+- TLS-on 状态下不要跑明文测试用例（明文连 TLS 端口会被握手防御踢掉，这是预期行为）；
+- 性能数字受同机负载影响，关注相对变化而非绝对值；
+- 新增功能时：① 新增对应 test_*.py/.sh；② 在本 README 登记用法；③ 在 full_regression.sh 的合适矩阵中登记（先改好回归入口，再提交）。
+
+## 11. 历史回归记录（老入口）
+
+早期的一键回归方式（手动按序执行），保留作为参考：
 ```bash
 cd test
 ./run_server_for_test.sh 18080 2 100 10
