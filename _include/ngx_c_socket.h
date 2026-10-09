@@ -135,6 +135,7 @@ public:
 	int ProcessEpollEvents(int iTimeOut);		//epoll等待接收和处理事件
 	int OperateEpollEvent(int fd, uint32_t iEventType, uint32_t iEventFlag, int iExtAction, lpngx_connection_t pConn);  //epoll操作事件
 	
+	bool NgxCheckCertReload();                      //SIGHUP重载时检测证书文件变化, 变化则重建SSL_CTX[返回true=需轮换worker]【公开供master重载调用】
 protected:
 	//数据发送相关
 	void PushData2SendBuff(char *pcData);              //把数据扔到待发送对列中 
@@ -255,6 +256,7 @@ private:
 	int             m_iUseEpollET;               //epoll触发模式 0:LT水平触发(默认) 1:ET边缘触发
 	int             m_iUseReusePort;             //SO_REUSEPORT 0:master创建监听socket由worker继承(默认) 1:各worker独立监听
 	int             m_iUseTLS;                   //是否启用TLS 0:否(默认,零开销) 1:是(需证书/私钥)
+	time_t          m_tCertMtime;                //加载证书时记录的文件mtime(SIGHUP重载时检测证书是否更新)
 	char            m_szTLSCertFile[256];        //TLS证书文件路径(PEM)
 	char            m_szTLSKeyFile[256];         //TLS私钥文件路径(PEM)
 	SSL_CTX         *m_pSSLCtx;                  //TLS服务端上下文(master创建, fork继承只读使用)

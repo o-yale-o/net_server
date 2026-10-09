@@ -10,6 +10,7 @@
 #include <sys/time.h>  //gettimeofday
 #include <time.h>      //localtime_r
 #include <fcntl.h>     //open
+#include <sys/stat.h>  //stat(证书文件变化检测)
 #include <errno.h>     //errno
 #include <sys/ioctl.h> //ioctl
 #include <arpa/inet.h>
@@ -1081,7 +1082,46 @@ bool CSocekt::NgxSSLInit()
         return false;
     }
 
+    //(记录证书文件mtime, SIGHUP重载时据此检测证书是否更新)
+    struct stat st;
+    if(stat(m_szTLSCertFile, &st) == 0)
+        m_tCertMtime = st.st_mtime;
+
     LOG_INFO("TLS初始化成功, 证书=%s, 私钥=%s。",m_szTLSCertFile,m_szTLSKeyFile);
+    return true;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: SIGHUP重载时检测TLS证书文件是否变化(mtime), 变化则重建SSL_CTX(加载新证书)
+          返回true表示需要轮换worker——已有worker继承的是旧SSL_CTX,
+          只有重启worker才能用上新证书(新worker由NgxReloadWorkers启动)
+参数说明:   无
+返 回 值: true=证书已更新且SSL_CTX重建成功(需轮换worker) false=无变化/重建失败(沿用旧证书)
+被引用于: NgxReloadWorkers()
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CSocekt::NgxCheckCertReload()
+{
+    if(m_iUseTLS != 1 || m_pSSLCtx == NULL)
+        return false;
+
+    struct stat st;
+    if(stat(m_szTLSCertFile, &st) != 0 || st.st_mtime == m_tCertMtime)
+        return false;  //证书文件无变化
+
+    //证书文件已更新: 在现有SSL_CTX上重新加载(旧worker进程持有各自的引用计数副本, 不受影响)
+    if(SSL_CTX_use_certificate_file(m_pSSLCtx, m_szTLSCertFile, SSL_FILETYPE_PEM) != 1 ||
+       SSL_CTX_use_PrivateKey_file(m_pSSLCtx, m_szTLSKeyFile, SSL_FILETYPE_PEM) != 1 ||
+       SSL_CTX_check_private_key(m_pSSLCtx) != 1)
+    {
+        LOG_ALERT("TLS证书/私钥重新加载失败, 继续使用旧证书!");
+        return false;
+    }
+
+    m_tCertMtime = st.st_mtime;
+    LOG_INFO("检测到TLS证书已更新, SSL_CTX重建成功, 开始轮换worker加载新证书!");
     return true;
 }
 

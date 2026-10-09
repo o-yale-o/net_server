@@ -396,9 +396,36 @@ static void NgxReloadWorkers()
         iNewNum = _MAX_WORKER_PROCESSES_;
 
     int iOldNum = g_iWorkerProcNum;
-    if(iNewNum == iOldNum)
+
+    //(TLS证书文件变化检测: 有变化则重建SSL_CTX, 并需要轮换worker加载新证书)
+    bool bNeedCycle = g_LogicSocket.NgxCheckCertReload();
+
+    if(iNewNum == iOldNum && bNeedCycle == false)
     {
         LOG_INFO("WorkerProcesses未变化(%d), 其余配置项将在worker重启后生效!", iNewNum);
+        return;
+    }
+
+    if(bNeedCycle == true && iNewNum == iOldNum)
+    {
+        //证书热重载: 先覆盖槽位启动继承新SSL_CTX的新worker, 再通知旧worker优雅退出
+        //【新worker启动成功后才覆盖旧pid; 中途失败旧worker仍在运行, 不影响服务】
+        pid_t arrOldPid[_MAX_WORKER_PROCESSES_];
+        for(int i = 0; i < iOldNum; i++)
+            arrOldPid[i] = g_arrWorkerPid[i];
+        for(int i = 0; i < iNewNum; i++)
+        {
+            g_arrWorkerPid[i] = -1;
+            NgxSpawnProcess(i, "worker process");  //新worker继承重建后的SSL_CTX
+        }
+        for(int i = 0; i < iOldNum; i++)
+        {
+            if(arrOldPid[i] > 0)
+            {
+                kill(arrOldPid[i], SIGTERM);
+                LOG_INFO("证书轮换: 通知旧worker[pid=%P]退出!", arrOldPid[i]);
+            }            
+        }
         return;
     }
 
