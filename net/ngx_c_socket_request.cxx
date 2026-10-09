@@ -36,7 +36,20 @@
 修改记录: 
         修改日期    修改人          修改标记        新版本号    修改原因
 ******************************************************************************************/
+//批量收包: 一次事件循环读取, 直到内核缓冲区取空(EAGAIN)或达到上限(防止大流量连接饿死其他连接)
+//LT模式下本循环同样合法(减少唤醒次数); ET模式下为必须(只通知一次, 不取尽就再也不通知)
 void CSocekt::OnRead(lpngx_connection_t pConn)
+{  
+    for(int iLoop = 0; iLoop < 64; iLoop++)
+    {
+        OnReadOnce(pConn);
+        if(pConn->fd == -1)  //本段处理中连接被踢/关闭(如flood踢出), 立即停止
+            return;
+    }
+}
+
+//单次读取+收包状态机处理(由OnRead批量循环调用)
+void CSocekt::OnReadOnce(lpngx_connection_t pConn)
 {  
     if(pConn->fd == -1) //连接已被同批其他事件关闭，防御性直接返回
     {
@@ -177,16 +190,13 @@ ssize_t CSocekt::ReadData(lpngx_connection_t pConn,char *buff,ssize_t buflen)
         //EAGAIN和EWOULDBLOCK[【这个应该常用在hp上】应该是一样的值，表示没收到数据，一般来讲，在ET模式下会出现这个错误，因为ET模式下是不停的recv肯定有一个时刻收到这个errno，但LT模式下一般是来事件才收，所以不该出现这个返回值
         if(errno == EAGAIN || errno == EWOULDBLOCK)
         {
-            //我认为LT模式不该出现这个errno，而且这个其实也不是错误，所以不当做错误处理
-            LOG_STDERR1(errno,"errno == EAGAIN || errno == EWOULDBLOCK成立，出乎我意料！");//epoll为LT模式不应该出现这个返回值，所以直接打印出来瞧瞧
+            //内核缓冲区已取空【批量收包循环的正常退出路径】: 不打日志(批量模式下高频出现, 会刷屏拖慢性能)
             return -1; //不当做错误处理，只是简单返回
         }
         //EINTR错误的产生：当阻塞于某个慢系统调用的一个进程捕获某个信号且相应信号处理函数返回时，该系统调用可能返回一个EINTR错误。
         //例如：在socket服务器端，设置了信号捕获机制，有子进程，当在父进程阻塞于慢系统调用时由父进程捕获到了一个有效信号时，内核会致使accept返回一个EINTR错误(被中断的系统调用)。
-        if(errno == EINTR)  //这个不算错误，是我参考官方nginx，官方nginx这个就不算错误；
+        if(errno == EINTR)  //被信号中断: 不算错误(参考官方nginx)
         {
-            //我认为LT模式不该出现这个errno，而且这个其实也不是错误，所以不当做错误处理
-            LOG_STDERR1(errno,"errno == EINTR成立，出乎我意料！");//epoll为LT模式不应该出现这个返回值，所以直接打印出来瞧瞧
             return -1; //不当做错误处理，只是简单返回
         }
 
@@ -425,54 +435,56 @@ ssize_t CSocekt::WriteData(lpngx_connection_t c,char *buff,ssize_t size)  //ssiz
 void CSocekt::OnWrite(lpngx_connection_t pConn)
 {      
     CMemory *pMemory = CMemory::GetInstance();
-    
-    //这些代码的书写可以参照 void* CSocekt::ServerSendQueueThread(void* pvThreadData)
-    ssize_t lSendSize = WriteData( pConn, pConn->pcSendBuff, pConn->iSendLen);
 
-    if(lSendSize > 0 && lSendSize != pConn->iSendLen)
-    {        
-        //没有全部发送：做好记录，一边下次继续
-        pConn->pcSendBuff = pConn->pcSendBuff + lSendSize;
+    //æ¹éåé: ä¸æ¬¡äºä»¶å¾ªç¯åé, ç´å°åå®æEAGAIN(ETæ¨¡å¼å¿é¡»å¾ªç¯; LTæ¨¡å¼ä¸å¾ªç¯åæ ·åæ³ä¸åå°å¤é)
+    for(int iLoop = 0; iLoop < 64 && pConn->iSendLen > 0; iLoop++)
+    {
+        ssize_t lSendSize = WriteData( pConn, pConn->pcSendBuff, pConn->iSendLen);
+
+        if(lSendSize > 0 && lSendSize != (ssize_t)pConn->iSendLen)
+        {        
+            //æ²¡æå¨é¨åéï¼åå¥½è®°å½ï¼æ¬å¾ªç¯åç»§ç»­åéå©ä½é¨å
+            pConn->pcSendBuff = pConn->pcSendBuff + lSendSize;
 		pConn->iSendLen = pConn->iSendLen - lSendSize;	
-        return;
-    }
-    else if(lSendSize == -1)
-    {
-        LOG_STDERR1(errno,"收到epoll【可写】通知，实际发送操作不应该提示【缓冲区已满】"); 
-        return;
-    }
-
-    if(lSendSize > 0 && lSendSize == pConn->iSendLen) 
-    {// 发送完毕
-        //把【写事件通知】从epoll中移除（其他情况，那就是断线了，等着系统内核把连接从红黑树中干掉即可）
-        if(OperateEpollEvent(
-                pConn->fd,          //socket句柄
-                EPOLL_CTL_MOD,      //事件类型，这里是修改【因为我们准备减去写通知】
-                EPOLLOUT,           //标志，这里代表要减去的标志,EPOLLOUT：可写【可写的时候通知我】
-                1,                  //对于事件类型为增加的，EPOLL_CTL_MOD需要这个参数, 0：增加   1：去掉 2：完全覆盖
-                pConn               //连接池中的连接
-                ) == -1)
+            continue;
+        }
+        else if(lSendSize == -1)
         {
-            //有这情况发生？这可比较麻烦，不过先do nothing
-            LOG_STDERR1(errno,"ngx_epoll_oper_event()失败。");
-        }    
-    }
+            //åéç¼å²åºä»æ»¡(EAGAIN): å·²æ³¨åçEPOLLOUTäºä»¶ä¿æ, ç­ä¸æ¬¡é©±å¨
+            LOG_STDERR1(errno,"æ¶å°epollãå¯åãéç¥ï¼å®éåéæä½ä¸åºè¯¥æç¤ºãç¼å²åºå·²æ»¡ã"); 
+            return;
+        }
 
-    //能走下来的，要么数据发送完毕了，要么对端断开了，那么执行收尾工作吧；
+        if(lSendSize > 0) //ä¸æ¬¡æ§åéå®æ¯: æãåäºä»¶éç¥ãä»epollä¸­ç§»é¤
+        {
+            if(OperateEpollEvent(
+                    pConn->fd,          //socketå¥æ
+                    EPOLL_CTL_MOD,      //äºä»¶ç±»åï¼è¿éæ¯ä¿®æ¹ãå ä¸ºæä»¬åå¤åå»åéç¥ã
+                    EPOLLOUT,           //æ å¿ï¼è¿éä»£è¡¨è¦åå»çæ å¿,EPOLLOUTï¼å¯åãå¯åçæ¶åéç¥æã
+                    1,                  //å¯¹äºäºä»¶ç±»åä¸ºå¢å çï¼EPOLL_CTL_MODéè¦è¿ä¸ªåæ°, 0ï¼å¢å    1ï¼å»æ 2ï¼å®å¨è¦ç
+                    pConn               //è¿æ¥æ± ä¸­çè¿æ¥
+                    ) == -1)
+            {
+                //æè¿æåµåçï¼è¿å¯æ¯è¾éº»ç¦ï¼ä¸è¿ådo nothing
+                LOG_STDERR1(errno,"ngx_epoll_oper_event()å¤±è´¥ã");
+            }    
+        }
 
-    //数据发送完毕，或者把需要发送的数据干掉，都说明发送缓冲区可能有地方了，让发送线程往下走判断能否发送新数据
-    if(sem_post(&m_semEventSendBuff)==-1)
-    {
-       LOG_STDERR("sem_post(&m_semEventSendBuff)失败.");
-    }
+        //æ°æ®åéå®æ¯æå¯¹ç«¯æ­å¼ï¼åéç¼å²åºå¯è½æå°æ¹äºï¼è®©åéçº¿ç¨ç»§ç»­å¤æ­è½å¦åéæ°æ°æ®
+        if(sem_post(&m_semEventSendBuff)==-1)
+        {
+           LOG_STDERR("sem_post(&m_semEventSendBuff)å¤±è´¥.");
+        }
 
-    pMemory->FreeMemory(pConn->pcSendMemery);  //释放内存
-    pConn->pcSendMemery = NULL;        
-    if(lSendSize <= 0) //0或-2：对端断开，主动踢掉连接，否则该连接上排队的消息会被逐条静默丢弃
-    {
-        KickConnection(pConn);
+        pMemory->FreeMemory(pConn->pcSendMemery);  //éæ¾åå­
+        pConn->pcSendMemery = NULL;        
+        if(lSendSize <= 0) //0æ-2ï¼å¯¹ç«¯æ­å¼ï¼ä¸»å¨è¸¢æè¿æ¥ï¼å¦åè¯¥è¿æ¥ä¸æéçæ¶æ¯ä¼è¢«éæ¡éé»ä¸¢å¼
+        {
+            KickConnection(pConn);
+        }
+        --pConn->iThrowsendCount;  //å»ºè®®æ¾å¨æåæ§è¡
+        return;
     }
-    --pConn->iThrowsendCount;  //建议放在最后执行
     return;
 }
 

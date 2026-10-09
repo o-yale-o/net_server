@@ -146,7 +146,8 @@ private:
 
 	//一些业务处理函数handler
 	void OnAccept(lpngx_connection_t pConnOld);     //(监听socket【读】时间出发)有新连接到来
-	void OnRead(lpngx_connection_t pConn);          //(数据来由Epoll触发)读响应函数
+	void OnRead(lpngx_connection_t pConn);          //(数据来由Epoll触发)读响应函数[批量循环包装]
+	void OnReadOnce(lpngx_connection_t pConn);      //单次读取+收包状态机处理[由OnRead循环调用]
 	void OnWrite(lpngx_connection_t pConn);         //(可以发送时由Epoll触发)写响应函数
 	void CloseConnection(lpngx_connection_t pConn); //通用连接关闭函数，资源用这个函数释放【因为这里涉及到好几个要释放的资源，所以写成函数】
 

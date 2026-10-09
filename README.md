@@ -114,4 +114,6 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放�
 
 2025-10 第三轮：新增**全局在线用户表**（`misc/ngx_c_onlineuser.cxx`，POSIX 共享内存 + 进程共享互斥量 + 线性探测哈希），master 在 fork 前创建、各 worker 挂接同一块映射；登录（命令 6）登记、连接回收时自动注销、新命令 7 查询全局在线人数（跨 worker 实时可见）。并修复 accept 后未设置 TCP_NODELAY 导致的小包交互延迟。全部功能配备自动化测试（test/ 目录）并可一键回归。
 
+2025-10 第六轮：【ET+批量收包】第一步——**批量收发循环**：OnRead/OnWrite/OnAccept 改为一次事件循环处理直到 EAGAIN（单次上限 64 防饥饿），LT 模式下同样合法（减少内核唤醒次数），并为下一步 ET 模式做好代码准备；顺带精简 ReadData 中 EAGAIN/EINTR 的高频日志。压测：4 worker 心跳吞吐 3.9 万请求/秒（历史同口径 4.9 万，运行波动区间内）。价值：一次唤醒消化缓冲区堆积数据；风险：批量循环需防单连接饥饿（已设上限）。
+
 2025-10 第五轮：新增 **SIGHUP 配置热重载**（master 重读 nginx.conf：失败自动保留旧配置；WorkerProcesses 数量变化实时扩容/缩容 worker——缩容走优雅退出；其余配置项在 worker 重启后生效）。配套 test/test_reload.sh 一键验证。配test_broadcast：2025-10 第四轮：新增**广播消息**（命令11，token+seq认证防重放后经信箱投递给全部其他在线用户；9/10为服务器投递方向保留命令字）。并修复两个真bug：①uid计算符号扩展（Get_CRC有符号返回值导致跨worker查不到用户）；②延迟回收的旧连接注销会误删同名用户新登录的条目（引入不可变的连接分配ID uiConnId 做注销匹配）。

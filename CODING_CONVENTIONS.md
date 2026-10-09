@@ -49,7 +49,15 @@
 - nginx 的 `ngx_shm_t` 结构 → 本项目 `_STRUCT_XXX`/`ngx_xxx_s` 既有类型体系内命名；
 - 只借鉴**实现思路**，注释保留中文说明并注明参考nginx官方xx处。
 
-## 5. GitHub 推送总则（拐弯推送法）
+## 5. 每轮提交/推送前的README更新总则
+
+**每轮功能开发完成后、git 提交和推送 GitHub 之前，必须先把本轮成果更新到 README.md**：
+- 功能/修复内容写入九、已知问题与改进方向或相应章节（已完成的从待办勾销）；
+- 新增能力如有性能数据，附压测基准数字；
+- 新增测试脚本同步更新 test/README.md 的用法说明；
+- 然后再 git commit（commit message 中同样概括成果）并推送。
+
+## 6. GitHub 推送总则（拐弯推送法）
 
 **所有 git push 到 GitHub 一律按以下流程处理**（Linux 端无 VPN，直连 GitHub 不稳定，禁止直接从 Linux push）：
 
