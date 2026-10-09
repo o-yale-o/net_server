@@ -25,6 +25,7 @@
 #include "ngx_c_lockmutex.h"
 #include "ngx_c_onlineuser.h"  //全局在线用户表
 #include "ngx_c_msgroute.h"    //跨worker消息路由信箱
+#include "ngx_c_ticketkey.h"  //TLS会话票据密钥(跨worker共享)
 
 /******************************************************************************************
 函数原型: 
@@ -1076,6 +1077,11 @@ bool CSocekt::NgxSSLInit()
         LOG_STDERR("加载TLS私钥失败[%s]!",m_szTLSKeyFile);
         return false;
     }
+    //会话票据: 密钥表(共享内存,跨worker共享) + 注册票据回调
+    //【票据让重连客户端跳过昂贵的完整握手; 密钥共享使任意worker都能恢复票据】
+    if(CTicketKey::GetInstance()->Init(true) == false)
+        return false;
+    CTicketKey::GetInstance()->RegisterCb(m_pSSLCtx);
     if(SSL_CTX_check_private_key(m_pSSLCtx) != 1)
     {
         LOG_STDERR("TLS私钥与证书不匹配!");
@@ -1102,6 +1108,11 @@ bool CSocekt::NgxSSLInit()
 创建日期: 2026年10月09日
 修改记录: 
 ******************************************************************************************/
+bool CSocekt::IsTLSOn()
+{
+    return (m_iUseTLS == 1 && m_pSSLCtx != NULL);
+}
+
 bool CSocekt::NgxCheckCertReload()
 {
     if(m_iUseTLS != 1 || m_pSSLCtx == NULL)

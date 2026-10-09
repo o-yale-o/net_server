@@ -136,6 +136,7 @@ public:
 	int OperateEpollEvent(int fd, uint32_t iEventType, uint32_t iEventFlag, int iExtAction, lpngx_connection_t pConn);  //epoll操作事件
 	
 	bool NgxCheckCertReload();                      //SIGHUP重载时检测证书文件变化, 变化则重建SSL_CTX[返回true=需轮换worker]【公开供master重载调用】
+	bool IsTLSOn();                                 //TLS是否已启用[UseTLS=1且SSL_CTX就绪]
 protected:
 	//数据发送相关
 	void PushData2SendBuff(char *pcData);              //把数据扔到待发送对列中 

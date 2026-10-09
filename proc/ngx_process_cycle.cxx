@@ -14,6 +14,7 @@
 #include "ngx_c_conf.h"
 #include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
 #include "ngx_c_msgroute.h"    //跨worker消息路由信箱
+#include "ngx_c_ticketkey.h"  //TLS会话票据密钥(共享内存)
 
 //函数声明
 static void NgxStartWorkerProcesses(int iProcessesNum);
@@ -350,6 +351,11 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
     {
         exit(-2); //致命问题，简单粗暴退出；
     }
+    //校验TLS会话票据密钥共享内存【仅UseTLS=1时需要; 关闭TLS时票据模块本就不存在, 跳过】
+    if(g_LogicSocket.IsTLSOn() == true && CTicketKey::GetInstance()->Init(false) == false)
+    {
+        exit(-2); //致命问题，简单粗暴退出；
+    }
     sleep(1); //再休息1秒；
 
     if(g_LogicSocket.InitializeSubProc() == false) //初始化子进程需要具备的一些多线程能力相关的信息
@@ -399,6 +405,10 @@ static void NgxReloadWorkers()
 
     //(TLS证书文件变化检测: 有变化则重建SSL_CTX, 并需要轮换worker加载新证书)
     bool bNeedCycle = g_LogicSocket.NgxCheckCertReload();
+
+    //轮换会话票据密钥: 当前→备用, 新密钥签发; 旧票据过渡期仍可恢复【前向安全要求密钥定期更换】
+    if(CTicketKey::GetInstance()->Rotate() == true)
+        LOG_INFO("会话票据密钥已轮换!");
 
     if(iNewNum == iOldNum && bNeedCycle == false)
     {

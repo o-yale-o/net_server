@@ -4,6 +4,10 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"   #所有测试脚本/相对路径都以test目录为工作目录
+
+#清场: 杀掉所有残留nginx实例(历次测试的孤儿master会占住端口, 导致后续矩阵全挂)
+pkill -9 -x nginx 2>/dev/null
+sleep 1
 PASS_TOTAL=0
 FAIL_TOTAL=0
 
