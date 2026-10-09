@@ -41,7 +41,15 @@
 - 单例一律使用 C++11 Meyers 单例（函数内 static），禁止手写双检锁。
 - 错误路径必须回滚已分配资源；`while(!feof(f))` 模式禁止，一律 `while(fgets(...))`。
 
-## 4. GitHub 推送总则（拐弯推送法）
+## 4. 参考nginx源码时的命名转换总则
+
+借鉴/移植 nginx 官方代码时，**一律把变量名、函数名、类型名转换为本项目风格**后再入库：
+- nginx 的 `ngx_snprintf` / `ngx_shm_alloc` 类函数 → `NgxXxx` 大驼峰（如 `NgxSnprintf`、`NgxShmCreateAnon`）；
+- nginx 的 `shm->addr` / `size` / `log` 等变量 → `pShmAddr` / `ulSize` / `pLog` 匈牙利前缀+驼峰；
+- nginx 的 `ngx_shm_t` 结构 → 本项目 `_STRUCT_XXX`/`ngx_xxx_s` 既有类型体系内命名；
+- 只借鉴**实现思路**，注释保留中文说明并注明参考nginx官方xx处。
+
+## 5. GitHub 推送总则（拐弯推送法）
 
 **所有 git push 到 GitHub 一律按以下流程处理**（Linux 端无 VPN，直连 GitHub 不稳定，禁止直接从 Linux push）：
 

@@ -1,14 +1,12 @@
 ﻿#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
 #include <pthread.h>
 #include <sys/time.h>
 
 #include "ngx_c_msgroute.h"
+#include "ngx_c_shmutil.h"     //nginx风格共享内存封装(MAP_ANON|MAP_SHARED)
 #include "ngx_macro.h"
 #include "ngx_func.h"
 
@@ -21,11 +19,8 @@ struct ROUTE_SHM
 	ROUTE_MSG_ITEM    items[_TABLE_SIZE_];
 };
 
-#define SHM_NAME "/net_server_msgroute"
-
 CMsgRoute::CMsgRoute()
 {
-	m_iShmFd  = -1;
 	m_pShm    = NULL;
 	m_bInited = false;
 }
@@ -49,64 +44,37 @@ bool CMsgRoute::Init(bool bIsMaster)
 	if(m_bInited == true)  //幂等
 		return true;
 
-	int iFd = -1;
 	if(bIsMaster == true)
 	{
-		shm_unlink(SHM_NAME);  //清理残留
-		iFd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0600);
-		if(iFd == -1)
+		//(1)master: 创建匿名共享映射(nginx MAP_ANON方案,参考ngx_shmem.c)并初始化【必须在fork之前】
+		m_pShm = NgxShmCreateAnon(sizeof(ROUTE_SHM));
+		if(m_pShm == NULL)
 		{
-			LOG_STDERR1(errno, "CMsgRoute::Init()中shm_open()创建失败!");
+			LOG_STDERR1(errno, "CMsgRoute::Init()创建匿名共享内存失败!");
 			return false;
 		}
-		if(ftruncate(iFd, sizeof(ROUTE_SHM)) == -1)
-		{
-			LOG_STDERR1(errno, "CMsgRoute::Init()中ftruncate()失败!");
-			close(iFd);
-			shm_unlink(SHM_NAME);
-			return false;
-		}
-	}
-	else
-	{
-		iFd = shm_open(SHM_NAME, O_RDWR, 0600);
-		if(iFd == -1)
-		{
-			LOG_STDERR1(errno, "CMsgRoute::Init()中shm_open()打开失败[master是否先创建?]!");
-			return false;
-		}
-	}
 
-	void *pAddr = mmap(NULL, sizeof(ROUTE_SHM), PROT_READ | PROT_WRITE, MAP_SHARED, iFd, 0);
-	if(pAddr == MAP_FAILED)
-	{
-		LOG_STDERR1(errno, "CMsgRoute::Init()中mmap()失败!");
-		close(iFd);
-		if(bIsMaster == true) shm_unlink(SHM_NAME);
-		return false;
-	}
-
-	if(bIsMaster == true)
-	{
-		ROUTE_SHM *pShm = (ROUTE_SHM *)pAddr;
-		memset(pShm, 0, sizeof(ROUTE_SHM));
-
+		ROUTE_SHM *pShm = (ROUTE_SHM *)m_pShm;  //NgxShmCreateAnon已清零
 		pthread_mutexattr_t attr;
 		pthread_mutexattr_init(&attr);
 		pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
 		pthread_mutex_init(&pShm->mutex, &attr);
 		pthread_mutexattr_destroy(&attr);
 	}
+	else
+	{
+		//(2)worker: fork继承了master的映射, 只需确认有效
+		if(NgxShmInherited(m_pShm) == false)
+		{
+			LOG_STDERR("CMsgRoute::Init()worker继承的共享内存无效[master是否先Init(true)?]!");
+			return false;
+		}
+	}
 
-	m_iShmFd  = iFd;
-	m_pShm    = pAddr;
 	m_bInited = true;
-
-	LOG_INFO("消息路由信箱初始化成功[%s进程], 槽位数=%d, 共享内存=%d字节。",
-	         bIsMaster == true ? "master" : "worker", _TABLE_SIZE_, (int)sizeof(ROUTE_SHM));
+	LOG_INFO("消息路由信箱初始化成功[%s进程], 槽位数=%d。", bIsMaster == true ? "master" : "worker", _TABLE_SIZE_);
 	return true;
 }
-
 bool CMsgRoute::Lock()
 {
 	if(m_bInited == false)

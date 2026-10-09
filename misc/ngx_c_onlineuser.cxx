@@ -2,13 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
 #include <pthread.h>
 
 #include "ngx_c_onlineuser.h"
+#include "ngx_c_shmutil.h"     //nginx风格共享内存封装(MAP_ANON|MAP_SHARED)
 #include "ngx_macro.h"
 #include "ngx_func.h"   //LogErrorCore等函数声明
 
@@ -22,11 +20,8 @@ struct ONLINE_USER_SHM
 	ONLINE_USER_ITEM       items[_TABLE_SIZE_];         //哈希槽位数组
 };
 
-#define SHM_NAME "/net_server_online_user"              //共享内存名(实际落在/dev/shm下)
-
 COnlineUserTable::COnlineUserTable()
 {
-	m_iShmFd  = -1;
 	m_pShm    = NULL;
 	m_bInited = false;
 }
@@ -52,67 +47,37 @@ bool COnlineUserTable::Init(bool bIsMaster)
 	if(m_bInited == true)  //幂等保护
 		return true;
 
-	//(1)取得共享内存fd: master独占创建；worker打开master已创建好的
-	int iFd = -1;
 	if(bIsMaster == true)
 	{
-		shm_unlink(SHM_NAME);  //清除可能残留的旧共享内存(不存在则忽略错误)
-		iFd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0600);
-		if(iFd == -1)
+		//(1)master: 创建匿名共享映射(nginx MAP_ANON方案,参考ngx_shmem.c)并初始化【必须在fork之前】
+		m_pShm = NgxShmCreateAnon(sizeof(ONLINE_USER_SHM));
+		if(m_pShm == NULL)
 		{
-			LOG_STDERR1(errno, "COnlineUserTable::Init()中shm_open()创建共享内存失败!");
+			LOG_STDERR1(errno, "COnlineUserTable::Init()创建匿名共享内存失败!");
 			return false;
 		}
-		if(ftruncate(iFd, sizeof(ONLINE_USER_SHM)) == -1)  //把共享内存扩到需要的大小
-		{
-			LOG_STDERR1(errno, "COnlineUserTable::Init()中ftruncate()失败!");
-			close(iFd);
-			shm_unlink(SHM_NAME);
-			return false;
-		}
-	}
-	else
-	{
-		iFd = shm_open(SHM_NAME, O_RDWR, 0600);
-		if(iFd == -1)
-		{
-			LOG_STDERR1(errno, "COnlineUserTable::Init()中shm_open()打开共享内存失败[master是否先创建?]!");
-			return false;
-		}
-	}
 
-	//(2)映射到本进程地址空间
-	void *pAddr = mmap(NULL, sizeof(ONLINE_USER_SHM), PROT_READ | PROT_WRITE, MAP_SHARED, iFd, 0);
-	if(pAddr == MAP_FAILED)
-	{
-		LOG_STDERR1(errno, "COnlineUserTable::Init()中mmap()失败!");
-		close(iFd);
-		if(bIsMaster == true) shm_unlink(SHM_NAME);
-		return false;
-	}
-
-	//(3)master负责初始化共享内存内容: 进程共享互斥量 + 清零
-	if(bIsMaster == true)
-	{
-		ONLINE_USER_SHM *pShm = (ONLINE_USER_SHM *)pAddr;
-		memset(pShm, 0, sizeof(ONLINE_USER_SHM));
-
+		ONLINE_USER_SHM *pShm = (ONLINE_USER_SHM *)m_pShm;  //NgxShmCreateAnon已清零
 		pthread_mutexattr_t attr;
 		pthread_mutexattr_init(&attr);
 		pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);  //关键：跨进程共享该互斥量
 		pthread_mutex_init(&pShm->mutex, &attr);
 		pthread_mutexattr_destroy(&attr);
 	}
+	else
+	{
+		//(2)worker: fork继承了master的映射, 只需确认有效
+		if(NgxShmInherited(m_pShm) == false)
+		{
+			LOG_STDERR("COnlineUserTable::Init()worker继承的共享内存无效[master是否先Init(true)?]!");
+			return false;
+		}
+	}
 
-	m_iShmFd  = iFd;
-	m_pShm    = pAddr;
 	m_bInited = true;
-
-	LOG_INFO("在线用户表初始化成功[%s进程], 表大小=%d, 共享内存=%d字节。",
-	         bIsMaster == true ? "master" : "worker", _TABLE_SIZE_, (int)sizeof(ONLINE_USER_SHM));
+	LOG_INFO("在线用户表初始化成功[%s进程], 表大小=%d。", bIsMaster == true ? "master" : "worker", _TABLE_SIZE_);
 	return true;
 }
-
 /******************************************************************************************
 函数原型: 
 功能描述: 加锁/解锁(进程共享互斥量)

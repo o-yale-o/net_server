@@ -42,7 +42,6 @@ private:
 	void Unlock();
 
 private:
-	int              m_iShmFd;              //共享内存描述符
-	void            *m_pShm;                //共享内存映射首地址
+	void            *m_pShm;                //共享内存映射首地址(master创建, worker经fork继承)
 	bool             m_bInited;             //是否已成功初始化
 };
