@@ -12,6 +12,7 @@
 //#include <sys/socket.h>
 #include <sys/ioctl.h> //ioctl
 #include <arpa/inet.h>
+#include <netinet/tcp.h>  //TCP_NODELAY
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -188,6 +189,9 @@ void CSocekt::OnAccept(lpngx_connection_t pConnOld)
         }
 
         pConnNew->pListening = pConnOld->pListening;    //连接对象 和监听对象关联，方便通过连接对象找监听对象【关联到监听端口】
+        //禁用Nagle：本服务器以大量小包(心跳/实时消息)交互，Nagle与延迟ACK叠加会造成最高40ms的发送延迟
+        int iNoDelay = 1;
+        setsockopt(iSockNew, IPPROTO_TCP, TCP_NODELAY, &iNoDelay, sizeof(iNoDelay));
         //pConnNew->iWriteReady = 1;                    //标记可以写，新连接写事件肯定是ready的；【从连接池拿出一个连接时这个连接的所有成员都是0】            
         
         pConnNew->pmfRead  = &CSocekt::OnRead;  //设置数据来时的读处理函数，其实官方 nginx 中是 ngx_http_wait_request_handler()

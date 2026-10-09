@@ -77,7 +77,22 @@ make clean
 | `Sock_WaitTimeEnable` / `Sock_MaxWaitTime` / `Sock_TimeOutKick` | 1 / 20 / 0 | 心跳检测开关 / 检测周期 / 是否强踢 |
 | `Sock_FloodAttackKickEnable` 等 | — | flood 攻击检测（时间间隔 + 连续次数） |
 
-## 六、核心设计要点
+## 六、测试
+
+自动化测试集中在 `test/` 目录（功能冒烟 / flood 防护 / 性能基准 / 进程生命周期），详见 [test/README.md](test/README.md)。快速上手：
+
+```bash
+make
+cd test
+./run_server_for_test.sh 18080      # 启动临时测试服务器(18080端口)
+python3 test_smoke.py               # 功能冒烟
+python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放宽flood参数)
+./stop_server_for_test.sh
+```
+
+参考基准：4 worker、4 连接并发心跳，吞吐约 4.5 万请求/秒，平均 RTT 0.081ms（2025-10，引入 TCP_NODELAY 后）。
+
+## 七、核心设计要点
 
 - **Master/Worker 多进程**：master 只做管理，worker 各自跑 epoll 事件循环；
 - **epoll LT 模式 + 非阻塞 socket**：连接池预分配，accept 与读写分离处理函数；
@@ -87,11 +102,11 @@ make clean
 - **线程池 + 消息队列**：网络线程只做收发，完整包投递队列由工作线程处理，I/O 与业务解耦；
 - **单例模式**（C++11 Meyers 单例：CConfig/CMemory/CCRC32）、**函数指针表命令分发**、**setproctitle**。
 
-## 七、编码规范
+## 八、编码规范
 
 所有代码遵循 [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md)：MFC 风格匈牙利命名（类型前缀 + 大驼峰，如 `iExitCode`、`g_iStopEvent`、`m_iLenPkgHeader`），类名 `C` 前缀，宏全大写下划线；新增代码请保持一致。
 
-## 八、已知问题与改进方向
+## 九、已知问题与改进方向
 
 2025-10 已完成一轮代码审查并修复 9 项功能缺陷（协议包长校验、日志格式化字符串漏洞、EPOLLOUT 错误分支泄漏、send 0/-2 静默丢包、连接归还顺序、配置解析死循环、伪双检锁单例等，见 git log）。
 
