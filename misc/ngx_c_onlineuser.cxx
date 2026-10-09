@@ -282,6 +282,51 @@ void COnlineUserTable::GetAllOnlineUids(uint64_t *pUidArr, int iArrSize, int &oU
 
 /******************************************************************************************
 函数原型: 
+功能描述: 掉线重连: 校验令牌并把该uid的会话条目绑定到新连接(连接ID/所在worker更新,
+          token与lastSeq保留——重连后业务序号继续递增, 不给重放窗口)
+参数说明:   uiUid          用户唯一标识
+            uiToken        客户端携带的会话令牌
+            uiNewConnId    新连接的分配ID
+            iNewWorkerPid  新连接所在worker进程pid
+返 回 值: true=会话已恢复(绑定新连接) false=失败(不在线已超窗口/令牌错误)
+被引用于: CLogicSocket::_HandleReconnect()
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool COnlineUserTable::TryRebind(uint64_t uiUid, uint64_t uiToken, uint64_t uiNewConnId, pid_t iNewWorkerPid)
+{
+	bool bOK = false;
+	if(Lock() == false)
+		return false;
+
+	ONLINE_USER_SHM *pShm = (ONLINE_USER_SHM *)m_pShm;
+	int iHash = (int)(uiUid % _TABLE_SIZE_);
+
+	for(int iProbe = 0; iProbe < _TABLE_SIZE_; iProbe++)
+	{
+		int idx = (iHash + iProbe) % _TABLE_SIZE_;
+		if(pShm->items[idx].uiState == 0)
+			break;
+		if(pShm->items[idx].uiUid == uiUid)
+		{
+			if(pShm->items[idx].uiToken == uiToken)
+			{
+				//令牌匹配: 会话绑定到新连接(旧连接回收时按其旧ID注销, 不会误删本条目)
+				pShm->items[idx].uiConnSeq  = uiNewConnId;
+				pShm->items[idx].iWorkerPid = iNewWorkerPid;
+				pShm->items[idx].timeLogin  = time(NULL);
+				bOK = true;
+			}
+			break;
+		}
+	}
+
+	Unlock();
+	return bOK;
+}
+
+/******************************************************************************************
+函数原型: 
 功能描述: 查找用户是否在线
 参数说明:   uiUid        uint64_t    用户唯一标识
             oUiConnSeq   uint64_t&   出参: 登录时的连接序号

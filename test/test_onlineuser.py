@@ -11,11 +11,23 @@
     ./run_server_for_test.sh 18080 2    # 建议2个worker，更能体现跨进程共享
     python3 test_onlineuser.py [主机] [端口]
 """
-import socket, struct, sys, time, zlib
+import socket, struct, sys, time, zlib, os, subprocess
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
-PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 18080
-ADDR = (HOST, PORT)
+# 本测试自管独立服务器实例(端口18090), 不受同服务器其他测试的在线人数残留影响
+PORT = 18090
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DIR = None
+MASTER = None
+
+def _start_server():
+    subprocess.run([_HERE + '/run_server_for_test.sh', str(PORT), '2'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    global DIR, MASTER
+    DIR = open('/tmp/ngtest_dir').read().strip()
+    MASTER = open(DIR + '/master.pid').read().strip()
+
+def _stop_server():
+    subprocess.run([_HERE + '/stop_server_for_test.sh'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ADDR = ('127.0.0.1', PORT)
 
 def make_login_pkt(username):
     """构造合法登录包: 消息头不算, 包头8字节+96字节登录体"""
@@ -52,6 +64,7 @@ def get_online_count():
     return struct.unpack('>i', body)[0]
 
 if __name__ == '__main__':
+    _start_server()
     fail = False
 
     # 1) 初始在线人数(应为0或≥0)
@@ -98,5 +111,6 @@ if __name__ == '__main__':
     print('B断开后在线人数: %d (初始:%d)' % (n5, n0))
     fail |= (n5 != n0)
 
+    _stop_server()
     print('== %s ==' % ('全部通过' if not fail else '存在FAIL'))
     sys.exit(1 if fail else 0)

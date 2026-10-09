@@ -108,6 +108,8 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放�
 
 ## 九、已知问题与改进方向（最新在前）
 
+**2025-10 第九轮**：新增 **掉线重连**（命令12，包体=uid+token）。客户端断线后在窗口期内（延迟回收时长，`Sock_RecyConnectionWaitTime`）重连，凭登录时下发的 uid+token 调用命令 12 → 在线表 `TryRebind` 校验令牌并把会话绑定到新连接：**在线计数不变、token/lastSeq 保留（业务序号继续防重放）**；且**离线窗口期内投递到信箱的消息自动补投到新连接**（依赖信箱"无人认领保留10秒"机制）。超窗口或令牌错误则应答失败、客户端走重新登录。依赖第八轮的连接分配 ID 设计——旧连接延迟回收的注销不会误删重连恢复的会话。配套 test/test_reconnect.py 4 用例（会话恢复/离线消息补投/错误令牌拒绝/超窗口拒绝）+ test_onlineuser.py 改造为自管独立服务器实例（消除链式回归的在线人数残留干扰）。
+
 **2025-10 第八轮**：新增 **TLS 加密传输**（排行榜任务4，`UseTLS` 默认 0 关闭——关闭时零开销、行为不变）。开启后（`UseTLS=1` + `TLSCertFile`/`TLSKeyFile`）：master 启动期创建 SSL_CTX 并加载证书（失败快速退出）；accept 后连接进入**非阻塞握手状态机**（`SSL_accept` 的 WANT_READ/WANT_WRITE 分别挂可读/可写事件，完成后切回 OnRead/OnWrite）；`ReadData`/`WriteData` 按 `pConn->pSSL` 分支 `SSL_read`/`SSL_write`（WANT_* 等价 EAGAIN）；连接回收时 `SSL_free`（挂接在唯一汇聚点 PutOneToFree）。证书支持自签名（测试证书由 run_server_for_test.sh 自动生成到临时目录）。实测 TLSv1.3：加密心跳/登录/在线查询全通，明文客户端连 TLS 端口被拒（防御生效）。
 
 价值：业务与业务逻辑代码零改动即可获得加密传输；风险备忘：①进程崩溃时已排队未落盘日志不丢但 TLS 会话中断属正常；②握手期间的连接占用内存（SSL 对象约几十KB）；③信号处理器内打日志的既有风险不变。

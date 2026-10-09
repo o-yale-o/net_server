@@ -54,6 +54,7 @@ static const handler statusHandler[] =
     NULL,                                                   //【9】：保留(服务器投递方向命令字,客户端不发送)
     NULL,                                                   //【10】：保留
     &CLogicSocket::_HandleBroadcast,                        //【11】：广播消息给全部其他在线用户(需认证+防重放)
+    &CLogicSocket::_HandleReconnect,                        //【12】：掉线重连(凭uid+token恢复会话)
     //......其他待扩展，比如实现攻击功能，实现加血功能等等；
 
 
@@ -575,6 +576,60 @@ bool CLogicSocket::_HandleBroadcast(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER 
             iSent++;
     }
     LOG_INFO("用户[uid=%ud]广播消息,在线%d人,实际投递%d人!",uiUidSelf,iCount,iSent);
+    return true;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: [掉线重连]业务逻辑【命令12】: 包体=uid(8)+token(8), 均主机序
+          令牌匹配则会话绑定到本连接(在线计数不变, token/lastSeq保留,
+          离线窗口期内投递到信箱的消息会被自动补投); 否则应答失败, 客户端应重新登录
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: COnlineUserTable
+被引用于: statusHandler[]命令表【12】
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CLogicSocket::_HandleReconnect(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)
+{
+    //(1)包体校验: uid(8)+token(8)
+    if(pPkgBody == NULL || iBodyLength != 16)
+        return false;
+
+    CLock lock(&pConn->mutexLogicProcess);
+
+    uint64_t uiUid, uiToken;
+    memcpy(&uiUid,pPkgBody,8);
+    memcpy(&uiToken,pPkgBody+8,8);
+
+    //(2)会话恢复: 令牌匹配则把在线表条目绑定到本连接
+    int iResult = 1;  //默认失败(需重新登录)
+    if(COnlineUserTable::GetInstance()->TryRebind(uiUid,uiToken,pConn->uiConnId,getpid()) == true)
+    {
+        pConn->uiOnlineUid = uiUid;  //恢复后新连接接管该用户, 连接回收时自动注销
+        iResult = 0;
+        LOG_INFO("用户uid=%ud掉线重连成功, 会话已恢复到新连接!",(u_int)uiUid);
+    }
+    else
+    {
+        LOG_STDERR("掉线重连失败[不在线超窗口或令牌错误], uid=%ud!",(u_int)uiUid);
+    }
+
+    //(3)应答: STRUCT_RECONNECT_REPLY
+    CMemory  *pMemory = CMemory::GetInstance();
+    CCRC32   *p_crc32 = CCRC32::GetInstance();
+    int iSendLen = sizeof(STRUCT_RECONNECT_REPLY);
+    char *p_sendbuf = (char *)pMemory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);
+    memcpy(p_sendbuf,pMsgHeader,m_iLenMsgHeader);
+    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);
+    pPkgHeader->msgCode = htons(_CMD_RECONNECT);
+    pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);
+    LPSTRUCT_RECONNECT_REPLY p_sendInfo = (LPSTRUCT_RECONNECT_REPLY)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    p_sendInfo->iResult = htonl(iResult);
+    pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
+    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);
+    PushData2SendBuff(p_sendbuf);
     return true;
 }
 

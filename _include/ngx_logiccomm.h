@@ -9,6 +9,7 @@
 #define _CMD_SENDMSG    _CMD_START + 8   //客户端发消息给指定uid【需认证: 包体前16字节为token+seq】
 #define _CMD_RECVMSG    _CMD_START + 9   //服务器投递给目标用户的消息【服务器主动下发,包体=STRUCT_RECVMSG】
 #define _CMD_BROADCAST  _CMD_START + 11  //客户端发消息给全部其他在线用户【需认证: 包体=token+seq+text[200]】
+#define _CMD_RECONNECT  _CMD_START + 12  //掉线重连: 包体=uid(8)+token(8), 成功则会话恢复(含离线消息补投)
                                           //注: 9/10为服务器投递方向保留命令字, 客户端勿用
 
 //结构定义------------------------------------
@@ -45,6 +46,13 @@ typedef struct _STRUCT_RECVMSG
 	char     acText[200];   //消息文本
 
 }STRUCT_RECVMSG, *LPSTRUCT_RECVMSG;
+
+//掉线重连应答结构
+typedef struct _STRUCT_RECONNECT_REPLY
+{
+	int     iResult;        //0=会话已恢复 1=失败(需重新登录)【传输时用htonl】
+
+}STRUCT_RECONNECT_REPLY, *LPSTRUCT_RECONNECT_REPLY;
 
 //登录应答结构【下发会话令牌】
 typedef struct _STRUCT_LOGIN_REPLY
