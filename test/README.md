@@ -80,7 +80,17 @@ python3 test_broadcast.py     # 5用例: 多人群发/发送者不收/二次广�
 
 覆盖命令10(广播): 认证+防重放+排除自己+全员投递。
 
-## 8. 配置热重载测试
+## 8. TLS 加密传输测试
+
+```bash
+./run_server_for_test.sh 18080 2 10 500 3 0 0 1   # 第8参数=1: 开启TLS并自动生成自签名测试证书
+python3 test_tls.py          # 4用例: TLSv1.3握手/加密心跳/加密登录+在线查询/明文拒连
+./stop_server_for_test.sh
+```
+
+证书相关说明(生成命令/部署/注意点)见项目根 README「六、TLS 证书与加密传输」。
+
+## 9. 配置热重载测试
 
 ```bash
 ./test_reload.sh     # 一键: SIGHUP未变重载/扩容2→3/缩容3→1/全程服务不中断/优雅退出
@@ -88,7 +98,7 @@ python3 test_broadcast.py     # 5用例: 多人群发/发送者不收/二次广�
 
 覆盖 SIGHUP 重载链路: 信号置位 → master 重读配置(失败保留旧配置) → WorkerProcesses 扩缩容 → 缩容 worker 优雅退出。
 
-## 9. 一键回归（全部测试）
+## 10. 一键回归（全部测试）
 
 ```bash
 cd test

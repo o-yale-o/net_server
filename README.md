@@ -77,7 +77,59 @@ make clean
 | `Sock_WaitTimeEnable` / `Sock_MaxWaitTime` / `Sock_TimeOutKick` | 1 / 20 / 0 | 心跳检测开关 / 检测周期 / 是否强踢 |
 | `Sock_FloodAttackKickEnable` 等 | — | flood 攻击检测（时间间隔 + 连续次数） |
 
-## 六、测试
+## 六、TLS 证书与加密传输
+
+服务支持可选的 TLS 加密传输（`nginx.conf` [Net] 段 `UseTLS`，**默认 0 关闭**——关闭时零开销、行为不变）。开启后客户端须以 TLS 方式连接（实测 TLSv1.3），明文连接会在握手阶段被踢除。
+
+### 1. 证书从哪来
+
+| 场景 | 证书来源 |
+|------|----------|
+| 测试 | `test/run_server_for_test.sh` 第 8 参数传 `1` 时，**自动生成自签名证书**到临时目录（`/tmp/ngtest.XXXX/server.crt` + `server.key`），随 `stop_server_for_test.sh` 清理一起销毁，一次性使用 |
+| 正式部署 | 自己准备证书/私钥，在 `nginx.conf` 中用 `TLSCertFile` / `TLSKeyFile` 指定路径（默认 `./server.crt` / `./server.key`，即工作目录） |
+
+手动生成自签名测试证书（也可供正式内网使用）：
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj "/CN=你的域名或IP" \
+    -keyout server.key -out server.crt
+```
+
+> 注意：**私钥（server.key）绝不能提交到 git**——如需放在仓库目录内，先在 .gitignore 中加入 `*.key`。正式对外服务建议使用 CA 签发证书（如 Let's Encrypt 免费证书）；自签名证书仅适合测试/内网。
+
+### 2. 配置与部署
+
+```bash
+# nginx.conf [Net] 段
+UseTLS = 1
+TLSCertFile = /path/to/server.crt
+TLSKeyFile  = /path/to/server.key
+```
+
+- 证书/私钥在 **master 启动期加载**（`NgxSSLInit()`），加载失败（文件不存在、格式错误、私钥不匹配）时 **master 启动即失败退出**（快速失败，日志有明确提示）；
+- `SSL_CTX` 在 fork 前创建，各 worker 继承只读使用，连接对象在 accept 时创建（`pConn->pSSL`）、回收时释放（PutOneToFree）；
+- 与 `UseEpollET` / `UseReusePort` 正交，可组合使用。
+
+### 3. 测试方法
+
+```bash
+cd test
+./run_server_for_test.sh 18080 2 10 500 3 0 0 1   # 第8参数=1 开启TLS(自动生成测试证书)
+python3 test_tls.py                                # 4用例: TLSv1.3握手/加密心跳/加密登录+查询/明文拒连
+./stop_server_for_test.sh
+```
+
+测试客户端（`test_tls.py`）使用 Python `ssl` 模块包装 socket，自签名证书需设置 `check_hostname=False`、`verify_mode=CERT_NONE`。curl 验证可用 `curl -k https://...`。
+
+### 4. 注意点
+
+- 明文客户端连接 TLS 端口：握手失败即被踢除（防御行为，test_tls.py 第 4 用例覆盖）；
+- TLS 握手期间连接持有 SSL 对象（约几十 KB/连接），海量连接时注意内存；
+- 证书过期/更换后需重启服务重新加载；
+- `UseTLS` 改动需重启生效（不支持热切换）。
+
+## 七、测试
 
 自动化测试集中在 `test/` 目录（功能冒烟 / flood 防护 / 性能基准 / 进程生命周期），详见 [test/README.md](test/README.md)。快速上手：
 
@@ -92,7 +144,7 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放�
 
 参考基准：4 worker、4 连接并发心跳，吞吐约 4.5 万请求/秒，平均 RTT 0.081ms（2025-10，引入 TCP_NODELAY 后）。
 
-## 七、核心设计要点
+## 八、核心设计要点
 
 - **Master/Worker 多进程**：master 只做管理，worker 各自跑 epoll 事件循环；
 - **epoll LT 模式 + 非阻塞 socket**：连接池预分配，accept 与读写分离处理函数；
@@ -102,11 +154,11 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 性能基准(注意按README放�
 - **线程池 + 消息队列**：网络线程只做收发，完整包投递队列由工作线程处理，I/O 与业务解耦；
 - **单例模式**（C++11 Meyers 单例：CConfig/CMemory/CCRC32）、**函数指针表命令分发**、**setproctitle**。
 
-## 八、编码规范
+## 九、编码规范
 
 所有代码遵循 [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md)：MFC 风格匈牙利命名（类型前缀 + 大驼峰，如 `iExitCode`、`g_iStopEvent`、`m_iLenPkgHeader`），类名 `C` 前缀，宏全大写下划线；新增代码请保持一致。
 
-## 九、已知问题与改进方向（最新在前）
+## 十、已知问题与改进方向（最新在前）
 
 **2025-10 第九轮**：新增 **掉线重连**（命令12，包体=uid+token）。客户端断线后在窗口期内（延迟回收时长，`Sock_RecyConnectionWaitTime`）重连，凭登录时下发的 uid+token 调用命令 12 → 在线表 `TryRebind` 校验令牌并把会话绑定到新连接：**在线计数不变、token/lastSeq 保留（业务序号继续防重放）**；且**离线窗口期内投递到信箱的消息自动补投到新连接**（依赖信箱"无人认领保留10秒"机制）。超窗口或令牌错误则应答失败、客户端走重新登录。依赖第八轮的连接分配 ID 设计——旧连接延迟回收的注销不会误删重连恢复的会话。配套 test/test_reconnect.py 4 用例（会话恢复/离线消息补投/错误令牌拒绝/超窗口拒绝）+ test_onlineuser.py 改造为自管独立服务器实例（消除链式回归的在线人数残留干扰）。
 
