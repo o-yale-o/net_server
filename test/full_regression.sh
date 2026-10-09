@@ -47,6 +47,7 @@ python3 test_perf.py 127.0.0.1 18080 4 2000; record "perf-RP" $?
 note "矩阵4: TLS (LT + 传统监听)"
 ./run_server_for_test.sh 18080 2 10 500 3 0 0 1 >/dev/null
 python3 test_tls.py;             record "tls" $?
+python3 test_ticket.py;          record "tls-ticket" $?
 ./stop_server_for_test.sh >/dev/null
 
 # ---- 5. 自管服务器的测试 ----

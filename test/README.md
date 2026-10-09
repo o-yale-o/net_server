@@ -111,7 +111,7 @@ python3 test_tls.py          # 4用例: TLSv1.3握手/加密心跳/加密登录+
 | 1 | LT + 传统监听（默认） | smoke / pushmsg / broadcast / reconnect / perf |
 | 2 | ET 边缘触发 | smoke / pushmsg / perf |
 | 3 | REUSEPORT 独立监听 | smoke / pushmsg / perf |
-| 4 | TLS 加密 | test_tls |
+| 4 | TLS 加密 | test_tls / test_ticket(会话票据) |
 | 独立实例 | 自管服务器 | onlineuser / lifecycle / reload |
 
 **框架性说明（新增/修改测试时必读）**：
