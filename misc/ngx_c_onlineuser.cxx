@@ -182,7 +182,7 @@ void COnlineUserTable::RemoveUser(uint64_t uiUid, uint64_t uiConnSeq)
 		{
 			if(pShm->items[idx].uiConnSeq != uiConnSeq)
 			{
-				LOG_INFO("[DEBUG]注销序号不符: 槽内seq=%Lu 传入seq=%Lu",pShm->items[idx].uiConnSeq,uiConnSeq);
+				LOG_INFO("[DEBUG]注销序号不符: 槽内seq=%ud 传入seq=%ud",pShm->items[idx].uiConnSeq,uiConnSeq);
 				//槽位里的连接序号与注销请求不符: 说明该uid已在新连接上重新登录,
 				//这条是"旧连接延迟回收"的注销请求, 绝不能误删新登录条目
 				Unlock();

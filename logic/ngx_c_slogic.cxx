@@ -416,7 +416,7 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
     if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->uiConnId,getpid(),uiToken) == true)
     {
         pConn->uiOnlineUid = uiUid;  //记录到连接上，连接回收时自动注销
-        LOG_INFO("用户[%s]登录成功,uid=%Lu,已登记到在线用户表!",p_RecvInfo->username,uiUid);
+        LOG_INFO("用户[%s]登录成功,uid=%ud,已登记到在线用户表!",p_RecvInfo->username,(u_int)uiUid);
     }
     else
     {
@@ -489,7 +489,7 @@ bool CLogicSocket::_HandleSendMsg(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pM
     memcpy(&uiSeq,pPkgBody+8,8);
     if(COnlineUserTable::GetInstance()->CheckUserSeqToken(uiUidSelf,uiToken,uiSeq) == false)
     {
-        LOG_STDERR("CLogicSocket::_HandleSendMsg()认证或防重放校验失败,uid=%Lu!",uiUidSelf);
+        LOG_STDERR("CLogicSocket::_HandleSendMsg()认证或防重放校验失败,uid=%ud!",uiUidSelf);
         return false;
     }
 
@@ -501,7 +501,7 @@ bool CLogicSocket::_HandleSendMsg(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pM
     uint64_t uiTargetSeq; pid_t iTargetWorker;
     if(COnlineUserTable::GetInstance()->FindUser(uiToUid,uiTargetSeq,iTargetWorker) == false)
     {
-        LOG_STDERR("CLogicSocket::_HandleSendMsg()目标用户uid=%Lu不在线!",uiToUid);
+        LOG_STDERR("CLogicSocket::_HandleSendMsg()目标用户uid=%ud不在线!",uiToUid);
         return false;
     }
 
@@ -549,7 +549,7 @@ bool CLogicSocket::_HandleBroadcast(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER 
     memcpy(&uiSeq,pPkgBody+8,8);
     if(COnlineUserTable::GetInstance()->CheckUserSeqToken(uiUidSelf,uiToken,uiSeq) == false)
     {
-        LOG_STDERR("CLogicSocket::_HandleBroadcast()认证或防重放校验失败,uid=%Lu!",uiUidSelf);
+        LOG_STDERR("CLogicSocket::_HandleBroadcast()认证或防重放校验失败,uid=%ud!",uiUidSelf);
         return false;
     }
 
@@ -574,7 +574,7 @@ bool CLogicSocket::_HandleBroadcast(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER 
         if(CMsgRoute::GetInstance()->PutMsg(arrUids[i],_CMD_RECVMSG,(const char *)&recvInfo,sizeof(recvInfo)) == true)
             iSent++;
     }
-    LOG_INFO("用户[uid=%Lu]广播消息,在线%d人,实际投递%d人!",uiUidSelf,iCount,iSent);
+    LOG_INFO("用户[uid=%ud]广播消息,在线%d人,实际投递%d人!",uiUidSelf,iCount,iSent);
     return true;
 }
 

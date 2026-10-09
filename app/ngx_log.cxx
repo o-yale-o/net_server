@@ -9,11 +9,107 @@
 #include <time.h>      //localtime_r
 #include <fcntl.h>     //open
 #include <errno.h>     //errno
+#include <pthread.h>
+#include <semaphore.h>
+#include <list>
 
 #include "ngx_global.h"
 #include "ngx_macro.h"
 #include "ngx_func.h"
 #include "ngx_c_conf.h"
+
+//===== 异步日志线程 =====
+//业务线程只负责格式化并堆缓冲入队, 由独立日志线程负责write()落盘, 消除热路径上的磁盘IO抖动。
+//fork感知: 日志线程不能跨fork存活, 以初始化时的pid做守卫——respawn/新worker进程会自动重建自己的日志线程。
+static std::list<char*> s_listLogBuf;                     //待落盘日志缓冲队列(元素为malloc的整行字符串)
+static pthread_mutex_t  s_mutexLogQueue = PTHREAD_MUTEX_INITIALIZER;
+static sem_t            s_semLogQueue;                    //队列信号量
+static pthread_t        s_hLogThread = 0;                 //日志线程句柄
+static bool             s_bAsyncInited   = false;          //本进程异步日志是否已初始化
+static bool             s_bAsyncShutdown = false;          //退出标记: 线程排空队列后退出
+static pid_t            s_iInitPid       = 0;              //执行初始化的进程pid(fork守卫)
+
+static void *LogAsyncThread(void *pvArg)
+{
+    for(;;)
+    {
+        sem_wait(&s_semLogQueue);  //等待新日志
+
+        //(1)锁内整队摘取(锁内零write)
+        std::list<char*> listDone;
+        pthread_mutex_lock(&s_mutexLogQueue);
+        listDone.splice(listDone.end(), s_listLogBuf);
+        bool bExit = s_bAsyncShutdown;
+        pthread_mutex_unlock(&s_mutexLogQueue);
+
+        //(2)锁外逐条落盘
+        while(!listDone.empty())
+        {
+            char *pBuf = listDone.front();
+            listDone.pop_front();
+            write(g_structNgxLog.fd, pBuf, strlen(pBuf));
+            free(pBuf);
+        }
+
+        if(bExit == true)  //收到退出通知且队列已排空
+            break;
+    }
+    return (void*)0;
+}
+
+void LogAsyncInit()
+{
+    pid_t iPid = getpid();
+
+    if(s_bAsyncInited == true && s_iInitPid == iPid)
+        return;  //本进程已初始化过, 幂等返回
+
+    if(s_bAsyncInited == true && s_iInitPid != iPid)
+    {
+        //(fork继承来的状态): 本进程并没有日志线程, 丢弃继承的队列副本后重新初始化
+        pthread_mutex_lock(&s_mutexLogQueue);
+        while(!s_listLogBuf.empty())
+        {
+            free(s_listLogBuf.front());
+            s_listLogBuf.pop_front();
+        }
+        s_bAsyncInited = false;
+        pthread_mutex_unlock(&s_mutexLogQueue);
+    }
+
+    if(sem_init(&s_semLogQueue, 0, 0) == -1)
+    {
+        LOG_STDERR1(errno, "LogAsyncInit()中sem_init()失败, 日志退化为同步写!");
+        return;  //初始化失败: 保持同步写模式
+    }
+    if(pthread_create(&s_hLogThread, NULL, LogAsyncThread, NULL) != 0)
+    {
+        LOG_STDERR1(errno, "LogAsyncInit()中pthread_create()失败, 日志退化为同步写!");
+        sem_destroy(&s_semLogQueue);
+        return;
+    }
+
+    s_iInitPid  = iPid;
+    s_bAsyncInited = true;
+    return;
+}
+
+void LogAsyncShutdown()
+{
+    if(s_bAsyncInited == false || s_iInitPid != getpid())
+        return;  //本进程没有异步日志线程
+
+    pthread_mutex_lock(&s_mutexLogQueue);
+    s_bAsyncShutdown = true;  //通知线程排空队列后退出
+    pthread_mutex_unlock(&s_mutexLogQueue);
+    sem_post(&s_semLogQueue);
+
+    pthread_join(s_hLogThread, NULL);  //等待队列排空
+    s_bAsyncInited = false;
+    return;
+}
+
+#include "ngx_global.h"
 
 //全局量---------------------
 //错误等级，和ngx_macro.h里定义的日志等级宏是一一对应关系
@@ -205,7 +301,26 @@ void LogErrorCore( int iLogLevel,  int iSystemErrCode, const char *fmt, ... )
         }
         //磁盘是否满了的判断，先算了吧，还是由管理员保证这个事情吧； 
 
-        //写日志文件        
+        //写日志文件: 异步模式下堆缓冲入队由日志线程落盘; 未初始化(早期启动)或正在退出时同步写
+        if(s_bAsyncInited == true && s_bAsyncShutdown == false)
+        {
+            size_t ulLen = (size_t)(p - szErrBuff);
+            char *pBuf = (char *)malloc(ulLen + 1);
+            if(pBuf != NULL)
+            {
+                memcpy(pBuf, szErrBuff, ulLen);
+                pBuf[ulLen] = 0;
+                pthread_mutex_lock(&s_mutexLogQueue);
+                bool bWasEmpty = s_listLogBuf.empty();  //只在队列从空变非空时唤醒一次日志线程
+                s_listLogBuf.push_back(pBuf);
+                pthread_mutex_unlock(&s_mutexLogQueue);
+                if(bWasEmpty == true)
+                    sem_post(&s_semLogQueue);  //高负载时线程一次醒来批量落盘, 避免每条日志两次系统调用
+            }
+            //malloc失败则丢弃该条日志(绝不能阻塞业务线程)
+            break;
+        }
+
         n = write( g_structNgxLog.fd, szErrBuff, p - szErrBuff );  //文件写入成功后，如果中途
         if (n == -1) 
         {

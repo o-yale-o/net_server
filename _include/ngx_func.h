@@ -16,6 +16,8 @@ void   SetProcTitle(const char *szTitle);
 
 //日志打印输出有关
 void   LogInit();
+void   LogAsyncInit();      //启动异步日志线程[各进程fork之后各自调用]
+void   LogAsyncShutdown();  //停止异步日志线程并排空队列[进程退出前调用]
 void   LogStdErr(int iSystemErrCode, const char *fmt, ...);
 void   LogErrorCore(int iLogLevel,  int iSystemErrCode, const char *fmt, ...);
 u_char *LogSystemErr(u_char *pcBuff, u_char *last, int iSystemErrCode);

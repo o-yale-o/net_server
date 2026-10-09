@@ -92,6 +92,9 @@ void NgxMasterProcessCycle()
     }    
     //end 设置主进程标题
         
+    //启动master自己的异步日志线程【必须在fork之后: 日志线程不能跨fork存活, 各进程独立创建】
+    LogAsyncInit();
+
     //创建全局在线用户表(共享内存)【必须在fork之前创建，worker才能共享同一块映射】
     if(COnlineUserTable::GetInstance()->Init(true) == false)
     {
@@ -300,6 +303,7 @@ static void NgxWorkerProcessCycle(int iProcesseIndex,const char *pcProcName)
     //如果从这个循环跳出来
     g_ThreadPool.StopAll();      //考虑在这里停止线程池；
     g_LogicSocket.ShutdownSubProc(); //socket需要释放的东西考虑释放；
+    LogAsyncShutdown();          //排空异步日志队列后退出, 防止丢日志
     exit(0); //worker进程必须直接退出，绝不能return回NgxSpawnProcess()继续master的创建流程
 }
 
@@ -334,6 +338,9 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
         //内存没释放，但是简单粗暴退出；
         exit(-2);
     }
+    //启动worker自己的异步日志线程[fork后独立创建]
+    LogAsyncInit();
+
     if(COnlineUserTable::GetInstance()->Init(false) == false)
     {
         exit(-2); //致命问题，简单粗暴退出；

@@ -155,6 +155,7 @@ lblexit:  // 这里是执行不到的!!!
 void FreeResource()
 {
     //(1)对于因为设置可执行程序标题导致的环境变量分配的内存，我们应该释放
+    LogAsyncShutdown();  //先排空异步日志队列(其后才会关闭日志文件fd)
     if(g_pcEnvBuff)
     {
         delete []g_pcEnvBuff;
