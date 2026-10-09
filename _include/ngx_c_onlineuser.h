@@ -14,6 +14,8 @@ struct ONLINE_USER_ITEM
 	uint64_t uiConnSeq;       //登录时所在连接的iCurrSequence(用于将来定位/校验连接)
 	pid_t    iWorkerPid;      //登录发生在哪个worker进程
 	time_t   timeLogin;       //登录时间
+	uint64_t uiToken;         //会话令牌(登录时随机生成,下发客户端,后续业务包须携带)
+	uint64_t uiLastSeq;       //防重放: 该用户最近一次业务包的序号(须严格递增)
 	uint64_t uiState;         //槽位状态: 0=空闲 1=占用
 };
 
@@ -29,7 +31,8 @@ public:
 	//bIsMaster=false: 挂接已存在的共享内存【worker进程调用】
 	bool Init(bool bIsMaster);
 
-	bool AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorkerPid);    //登记上线用户(重复登录同一uid则覆盖)
+	bool AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorkerPid, uint64_t uiToken); //登记上线用户(带会话令牌; 重复登录同一uid则覆盖并刷新令牌)
+	bool CheckUserSeqToken(uint64_t uiUid, uint64_t uiToken, uint64_t uiSeq);  //认证+防重放: 令牌匹配且序号严格递增才通过
 	void RemoveUser(uint64_t uiUid);                                       //注销下线用户
 	bool FindUser(uint64_t uiUid, uint64_t &oUiConnSeq, pid_t &oIWorkerPid); //查找用户是否在线
 	int  GetOnlineCount();                                                 //当前在线总人数(全局)

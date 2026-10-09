@@ -273,6 +273,8 @@ void* CSocekt::ServerTimerQueueMonitorThread(void* pvThreadData)
             }
         } //end if(pSocket->m_lTimeMaxCurrSize > 0)
         
+        //周期处理跨worker消息路由信箱: 认领uid归属本worker的待投递消息(轮询周期即本循环周期500ms)
+        pSocket->ProcessRouteMsgs();
         usleep(500 * 1000); //为简化问题，我们直接每次休息500毫秒
     } //end while
 

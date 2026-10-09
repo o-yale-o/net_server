@@ -20,7 +20,10 @@
 #include "ngx_func.h"
 #include "ngx_c_socket.h"
 #include "ngx_c_memory.h"
+#include "ngx_c_crc32.h"    //包体CRC计算(消息路由投递用)
 #include "ngx_c_lockmutex.h"
+#include "ngx_c_onlineuser.h"  //全局在线用户表
+#include "ngx_c_msgroute.h"    //跨worker消息路由信箱
 
 /******************************************************************************************
 函数原型: 
@@ -906,6 +909,90 @@ int CSocekt::OperateEpollEvent(int fd, uint32_t iEventType, uint32_t iEventFlag,
 修改记录: 
         修改日期    修改人          修改标记        新版本号    修改原因
 ******************************************************************************************/
+/******************************************************************************************
+函数原型: 
+功能描述: 处理跨worker消息路由信箱: 找到uid归属本worker的连接则打包投递到其发送队列
+          由各worker的定时器线程周期调用(轮询周期500毫秒); 超时无人认领的消息由信箱回收
+参 回 值: 无
+被引用于: ServerTimerThread()
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+static bool NgxRouteOnMsg(void *pCtx, uint64_t uiToUid, int iCmd, const char *pcBody, int iBodyLen, uint64_t uiTimePut)
+{
+    CSocekt *pSocekt = (CSocekt *)pCtx;
+
+    //(1)在本worker的连接池中找该uid的存活连接
+    lpngx_connection_t pConnTarget = pSocekt->FindConnByUid(uiToUid);
+    if(pConnTarget == NULL)
+        return false; //本worker没有该用户: 保留消息给其他worker(超时由信箱回收)
+
+    //(2)构造应答包并投递到目标连接的发送队列
+    return pSocekt->DeliverRouteMsg(pConnTarget, iCmd, pcBody, iBodyLen);
+}
+
+void CSocekt::ProcessRouteMsgs()
+{
+    CMsgRoute::GetInstance()->ProcessAll(this, NgxRouteOnMsg, 10 * 1000); //10秒无人认领即过期回收
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: 把一条路由消息打包(消息头+包头+包体+CRC)并投递到指定连接的发送队列
+参数说明:   pConnTarget  目标连接
+            iCmd         命令字
+            pcBody       包体
+            iBodyLen     包体长度
+返 回 值: true=已投递
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CSocekt::DeliverRouteMsg(lpngx_connection_t pConnTarget, int iCmd, const char *pcBody, int iBodyLen)
+{
+    CMemory *pMemory  = CMemory::GetInstance();
+    CCRC32  *p_crc32  = CCRC32::GetInstance();
+    int iSendLen = iBodyLen;
+    char *p_sendbuf = (char *)pMemory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);
+    LPSTRUC_MSG_HEADER pMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
+    pMsgHeader->pConn = pConnTarget;
+    pMsgHeader->iCurrSequence = pConnTarget->iCurrSequence;
+    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);
+    pPkgHeader->msgCode = htons(iCmd);
+    pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);
+    if(iSendLen > 0)
+    {
+        memcpy(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader, pcBody, iSendLen);
+        pPkgHeader->crc32 = p_crc32->Get_CRC((unsigned char *)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader), iSendLen);
+        pPkgHeader->crc32 = htonl(pPkgHeader->crc32);
+    }
+    else
+    {
+        pPkgHeader->crc32 = 0;
+    }
+    PushData2SendBuff(p_sendbuf);
+    return true; //已投递
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: 在本worker连接池中查找uid对应的存活连接(消息路由投递用)
+参数说明:   uiUid   uint64_t   在线用户uid
+返 回 值: 找到返回连接指针, 未找到返回NULL
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+lpngx_connection_t CSocekt::FindConnByUid(uint64_t uiUid)
+{
+    CLock lock(&m_mutexConnection);
+    for(std::list<lpngx_connection_t>::iterator pos = m_listConnection.begin();
+        pos != m_listConnection.end(); ++pos)
+    {
+        if((*pos)->uiOnlineUid == uiUid && (*pos)->fd != -1)
+            return (*pos);
+    }
+    return NULL;
+}
+
 int CSocekt::ProcessEpollEvents(int iTimeOut) 
 {
     //等待事件，事件会返回到m_events里，最多返回NGX_MAX_EVENTS个事件【因为我只提供了这些内存】；

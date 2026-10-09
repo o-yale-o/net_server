@@ -121,6 +121,9 @@ public:
 	void PrintTDInfo(); //打印统计信息
 		
 	virtual void ProcessClientRequest(char *pcMsgBuf);                       //处理客户端请求，允许通过子类实现自己功能
+	void ProcessRouteMsgs();                           //处理跨worker消息路由信箱[定时器线程周期调用]
+	lpngx_connection_t FindConnByUid(uint64_t uiUid);  //在本worker连接池中查找uid对应的存活连接[消息路由用]
+	bool DeliverRouteMsg(lpngx_connection_t pConnTarget, int iCmd, const char *pcBody, int iBodyLen);  //路由消息打包投递[消息路由用]  //在本worker连接池中查找uid对应的存活连接[消息路由用]                           //处理跨worker消息路由信箱[定时器线程周期调用]                       //处理客户端请求，允许通过子类实现自己功能
 	virtual void ProcessIdleTimeOut(LPSTRUC_MSG_HEADER tmpmsg,time_t cur_time);  //心跳包检测时间到，该去检测心跳包是否超时的事宜，本函数只是把内存释放，子类应该重新事先该函数以实现具体的判断动作
 
 	int EpollInit();		//epoll功能初始化	

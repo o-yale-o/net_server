@@ -13,6 +13,7 @@
 #include "ngx_macro.h"
 #include "ngx_c_conf.h"
 #include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
+#include "ngx_c_msgroute.h"    //跨worker消息路由信箱
 
 //函数声明
 static void NgxStartWorkerProcesses(int iProcessesNum);
@@ -92,6 +93,11 @@ void NgxMasterProcessCycle()
         
     //创建全局在线用户表(共享内存)【必须在fork之前创建，worker才能共享同一块映射】
     if(COnlineUserTable::GetInstance()->Init(true) == false)
+    {
+        exit(2); //致命问题，直接退
+    }
+    //创建跨worker消息路由信箱(共享内存)【同样必须在fork之前】
+    if(CMsgRoute::GetInstance()->Init(true) == false)
     {
         exit(2); //致命问题，直接退
     }
@@ -322,6 +328,11 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
         exit(-2);
     }
     if(COnlineUserTable::GetInstance()->Init(false) == false)
+    {
+        exit(-2); //致命问题，简单粗暴退出；
+    }
+    //挂接跨worker消息路由信箱
+    if(CMsgRoute::GetInstance()->Init(false) == false)
     {
         exit(-2); //致命问题，简单粗暴退出；
     }

@@ -138,7 +138,7 @@ void COnlineUserTable::Unlock()
             iWorkerPid  pid_t      登录发生的worker进程pid
 返 回 值: 成功true(含覆盖) 失败false(表满/未初始化)
 ******************************************************************************************/
-bool COnlineUserTable::AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorkerPid)
+bool COnlineUserTable::AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorkerPid, uint64_t uiToken)
 {
 	if(Lock() == false)
 		return false;
@@ -167,10 +167,12 @@ bool COnlineUserTable::AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorker
 	bool bRet = true;
 	if(iExist != -1)
 	{
-		//同uid重复登录: 覆盖原槽位(更新连接序号/pid/时间)，在线人数不变
+		//同uid重复登录: 覆盖原槽位(更新连接序号/pid/时间/令牌)，在线人数不变
 		pShm->items[iExist].uiConnSeq  = uiConnSeq;
 		pShm->items[iExist].iWorkerPid = iWorkerPid;
 		pShm->items[iExist].timeLogin  = time(NULL);
+		pShm->items[iExist].uiToken    = uiToken;
+		pShm->items[iExist].uiLastSeq  = 0;   //重新登录后序号重新从0计
 	}
 	else if(iEmpty != -1)
 	{
@@ -178,6 +180,8 @@ bool COnlineUserTable::AddUser(uint64_t uiUid, uint64_t uiConnSeq, pid_t iWorker
 		pShm->items[iEmpty].uiConnSeq  = uiConnSeq;
 		pShm->items[iEmpty].iWorkerPid = iWorkerPid;
 		pShm->items[iEmpty].timeLogin  = time(NULL);
+		pShm->items[iEmpty].uiToken    = uiToken;
+		pShm->items[iEmpty].uiLastSeq  = 0;
 		pShm->items[iEmpty].uiState    = 1;
 		pShm->iOnlineCount++;
 	}
@@ -237,6 +241,43 @@ void COnlineUserTable::RemoveUser(uint64_t uiUid)
 
 	Unlock();
 	return;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: 认证+防重放：校验令牌匹配且序号严格递增，通过则记录新序号
+参数说明:   uiUid    用户唯一标识
+            uiToken  客户端携带的令牌
+            uiSeq    客户端携带的业务序号
+返 回 值: true=通过(已更新lastseq) false=拒绝(未在线/令牌错/序号回放)
+******************************************************************************************/
+bool COnlineUserTable::CheckUserSeqToken(uint64_t uiUid, uint64_t uiToken, uint64_t uiSeq)
+{
+	bool bPass = false;
+	if(Lock() == false)
+		return false;
+
+	ONLINE_USER_SHM *pShm = (ONLINE_USER_SHM *)m_pShm;
+	int iHash = (int)(uiUid % _TABLE_SIZE_);
+
+	for(int iProbe = 0; iProbe < _TABLE_SIZE_; iProbe++)
+	{
+		int idx = (iHash + iProbe) % _TABLE_SIZE_;
+		if(pShm->items[idx].uiState == 0)
+			break;
+		if(pShm->items[idx].uiUid == uiUid)
+		{
+			if(pShm->items[idx].uiToken == uiToken && uiSeq > pShm->items[idx].uiLastSeq)
+			{
+				pShm->items[idx].uiLastSeq = uiSeq;  //更新序号,该序号不可再用
+				bPass = true;
+			}
+			break;
+		}
+	}
+
+	Unlock();
+	return bPass;
 }
 
 /******************************************************************************************

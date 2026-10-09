@@ -26,7 +26,9 @@
 #include "ngx_c_slogic.h"  
 #include "ngx_logiccomm.h"  
 #include "ngx_c_lockmutex.h"
-#include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)  
+#include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
+#include "ngx_c_msgroute.h"    //跨worker消息路由信箱
+#include <fcntl.h>             //open(/dev/urandom)  
 
 //定义成员函数指针
 typedef bool (CLogicSocket::*handler)(  lpngx_connection_t pConn,      //连接池中连接的指针
@@ -48,6 +50,7 @@ static const handler statusHandler[] =
     &CLogicSocket::_HandleRegister,                         //【5】：实现具体的注册功能
     &CLogicSocket::_HandleLogIn,                           //【6】：实现具体的登录功能
     &CLogicSocket::_HandleWhoOnline,                        //【7】：查询全局在线人数
+    &CLogicSocket::_HandleSendMsg,                          //【8】：点对点消息(需认证+防重放)
     //......其他待扩展，比如实现攻击功能，实现加血功能等等；
 
 
@@ -381,21 +384,33 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
 	CMemory  *pMemory = CMemory::GetInstance();
 	CCRC32   *p_crc32 = CCRC32::GetInstance();
 
-    int iSendLen = sizeof(STRUCT_LOGIN);  
+    uint64_t uiToken = 0;
+    int iFdRand = open("/dev/urandom",O_RDONLY);   //生成随机会话令牌
+    if(iFdRand >= 0)
+    {
+        if(read(iFdRand,&uiToken,sizeof(uiToken)) != sizeof(uiToken)) uiToken = (uint64_t)time(NULL);
+        close(iFdRand);
+    }
+    else
+    {
+        uiToken = (uint64_t)time(NULL) ^ (uint64_t)pConn->iCurrSequence; //兜底
+    }
+    int iSendLen = sizeof(STRUCT_LOGIN_REPLY);  //登录应答: 下发会话令牌
     char *p_sendbuf = (char *)pMemory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);    
     memcpy(p_sendbuf,pMsgHeader,m_iLenMsgHeader);    
     pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);
     pPkgHeader->msgCode = _CMD_LOGIN;
     pPkgHeader->msgCode = htons(pPkgHeader->msgCode);
     pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);    
-    LPSTRUCT_LOGIN p_sendInfo = (LPSTRUCT_LOGIN)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    LPSTRUCT_LOGIN_REPLY p_sendInfo = (LPSTRUCT_LOGIN_REPLY)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    p_sendInfo->uiToken = uiToken;  //下发会话令牌(后续业务包须携带)
     pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
     pPkgHeader->crc32   = htonl(pPkgHeader->crc32);	   
     PushData2SendBuff(p_sendbuf);
 
     //(6)登录成功: 登记到全局在线用户表(共享内存,跨worker可见)【uid取用户名的CRC32】
-    uint64_t uiUid = (uint64_t)p_crc32->Get_CRC((unsigned char *)p_RecvInfo->username,strlen(p_RecvInfo->username));
-    if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->iCurrSequence,getpid()) == true)
+    uint64_t uiUid = (uint64_t)(uint32_t)p_crc32->Get_CRC((unsigned char *)p_RecvInfo->username,strlen(p_RecvInfo->username)); //先转uint32防止符号扩展
+    if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->iCurrSequence,getpid(),uiToken) == true)
     {
         pConn->uiOnlineUid = uiUid;  //记录到连接上，连接回收时自动注销
         LOG_INFO("用户[%s]登录成功,uid=%Lu,已登记到在线用户表!",p_RecvInfo->username,uiUid);
@@ -442,6 +457,66 @@ bool CLogicSocket::_HandleWhoOnline(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER 
     return true;
 }
 
+/******************************************************************************************
+函数原型: 
+功能描述: [点对点消息]业务逻辑【命令8】: 包体=token(8)+seq(8)+STRUCT_SENDMSG
+          认证+防重放通过后, 消息经跨worker信箱投递到目标uid所在连接
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: COnlineUserTable / CMsgRoute
+被引用于: statusHandler[]命令表【8】
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CLogicSocket::_HandleSendMsg(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)
+{
+    if(pConn->uiOnlineUid == 0)  //未登录用户不允许使用该命令
+        return false;
+
+    uint64_t uiUidSelf = pConn->uiOnlineUid;
+
+    //(1)包体校验: 认证字段(16字节) + STRUCT_SENDMSG
+    int iNeedLen = 16 + sizeof(STRUCT_SENDMSG);
+    if(pPkgBody == NULL || iBodyLength != iNeedLen)
+        return false;
+
+    //(2)认证+防重放: token匹配且seq严格递增(防重放)
+    uint64_t uiToken, uiSeq;
+    memcpy(&uiToken,pPkgBody,8);
+    memcpy(&uiSeq,pPkgBody+8,8);
+    if(COnlineUserTable::GetInstance()->CheckUserSeqToken(uiUidSelf,uiToken,uiSeq) == false)
+    {
+        LOG_STDERR("CLogicSocket::_HandleSendMsg()认证或防重放校验失败,uid=%Lu!",uiUidSelf);
+        return false;
+    }
+
+    //(3)解析消息内容(主机序)
+    LPSTRUCT_SENDMSG pMsg = (LPSTRUCT_SENDMSG)(pPkgBody+16);
+    uint64_t uiToUid = pMsg->uiToUid;
+
+    //(4)目标用户必须在线(全局表可见)
+    uint64_t uiTargetSeq; pid_t iTargetWorker;
+    if(COnlineUserTable::GetInstance()->FindUser(uiToUid,uiTargetSeq,iTargetWorker) == false)
+    {
+        LOG_STDERR("CLogicSocket::_HandleSendMsg()目标用户uid=%Lu不在线!",uiToUid);
+        return false;
+    }
+
+    //(5)投入跨worker信箱: 命令9投递, 包体=STRUCT_RECVMSG{fromUid+text}
+    STRUCT_RECVMSG recvInfo;
+    memset(&recvInfo,0,sizeof(recvInfo));
+    recvInfo.uiFromUid = uiUidSelf;
+    memcpy(recvInfo.acText,pMsg->acText,sizeof(pMsg->acText));
+    if(CMsgRoute::GetInstance()->PutMsg(uiToUid,_CMD_RECVMSG,(const char *)&recvInfo,sizeof(recvInfo)) == false)
+    {
+        LOG_STDERR("CLogicSocket::_HandleSendMsg()投递消息到路由信箱失败(信箱满?)!");
+        return false;
+    }
+    return true;
+}
+
+/******************************************************************************************
+函数原型: 
 /******************************************************************************************
 函数原型: 
 功能描述: 接收并处理客户端发送过来的ping包
