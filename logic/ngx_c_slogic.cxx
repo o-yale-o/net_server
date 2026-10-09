@@ -25,7 +25,8 @@
 #include "ngx_c_crc32.h"
 #include "ngx_c_slogic.h"  
 #include "ngx_logiccomm.h"  
-#include "ngx_c_lockmutex.h"  
+#include "ngx_c_lockmutex.h"
+#include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)  
 
 //定义成员函数指针
 typedef bool (CLogicSocket::*handler)(  lpngx_connection_t pConn,      //连接池中连接的指针
@@ -45,7 +46,8 @@ static const handler statusHandler[] =
  
     //开始处理具体的业务逻辑
     &CLogicSocket::_HandleRegister,                         //【5】：实现具体的注册功能
-    &CLogicSocket::_HandleLogIn,                            //【6】：实现具体的登录功能
+    &CLogicSocket::_HandleLogIn,                           //【6】：实现具体的登录功能
+    &CLogicSocket::_HandleWhoOnline,                        //【7】：查询全局在线人数
     //......其他待扩展，比如实现攻击功能，实现加血功能等等；
 
 
@@ -388,8 +390,54 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
     pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);    
     LPSTRUCT_LOGIN p_sendInfo = (LPSTRUCT_LOGIN)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
     pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
-    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);		   
-    //LogStdErr(0,"成功收到了登录并返回结果！");
+    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);	   
+    PushData2SendBuff(p_sendbuf);
+
+    //(6)登录成功: 登记到全局在线用户表(共享内存,跨worker可见)【uid取用户名的CRC32】
+    uint64_t uiUid = (uint64_t)p_crc32->Get_CRC((unsigned char *)p_RecvInfo->username,strlen(p_RecvInfo->username));
+    if(COnlineUserTable::GetInstance()->AddUser(uiUid,pConn->iCurrSequence,getpid()) == true)
+    {
+        pConn->uiOnlineUid = uiUid;  //记录到连接上，连接回收时自动注销
+        LOG_INFO("用户[%s]登录成功,uid=%Lu,已登记到在线用户表!",p_RecvInfo->username,uiUid);
+    }
+    else
+    {
+        LOG_ALERT("用户[%s]登录成功但登记在线用户表失败(表满?)!",p_RecvInfo->username);
+    }
+    return true;
+}
+
+/******************************************************************************************
+函数原型: 
+功能描述: [查询全局在线人数]业务逻辑：无包体；应答包体为int(网络序)
+参数说明:   名称            类型                说明
+返 回 值: 
+依 赖 于: COnlineUserTable(共享内存)
+被引用于: statusHandler[]命令表【7】
+创建日期: 2026年10月09日
+修改记录: 
+******************************************************************************************/
+bool CLogicSocket::_HandleWhoOnline(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)
+{
+    if(pPkgBody != NULL)  //该命令不允许带包体
+        return false;
+
+    CLock lock(&pConn->mutexLogicProcess);
+
+    int iOnlineCount = COnlineUserTable::GetInstance()->GetOnlineCount();
+
+    CMemory  *pMemory = CMemory::GetInstance();
+    CCRC32   *p_crc32 = CCRC32::GetInstance();
+    int iSendLen = sizeof(STRUCT_WHOONLINE_REPLY);
+    char *p_sendbuf = (char *)pMemory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);
+    memcpy(p_sendbuf,pMsgHeader,m_iLenMsgHeader);
+    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);
+    pPkgHeader->msgCode = htons(_CMD_WHOONLINE);
+    pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);
+    LPSTRUCT_WHOONLINE_REPLY p_sendInfo = (LPSTRUCT_WHOONLINE_REPLY)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    p_sendInfo->iOnlineCount = htonl(iOnlineCount);  //int要转网络序
+    pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
+    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);
     PushData2SendBuff(p_sendbuf);
     return true;
 }

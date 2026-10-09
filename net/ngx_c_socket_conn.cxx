@@ -21,6 +21,7 @@
 #include "ngx_c_socket.h"
 #include "ngx_c_memory.h"
 #include "ngx_c_lockmutex.h"
+#include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
 
 /******************************************************************************************
 函数原型: 
@@ -86,6 +87,7 @@ void ngx_connection_s::InitBeforeUse()
     timeLastPing   = time(NULL);//上次ping的时间
 
     uiTimeLastFloodKick = 0;    //Flood攻击上次收到包的时间
+    uiOnlineUid          = 0;    //未登录
 	iFloodAttackCount   = 0;    //Flood攻击在该时间内收到包的次数统计
     iSendCount          = 0;    //发送队列中有的数据条目数，若client只发不收，则可能造成此数过大，依据此数做出踢出处理 
 }
@@ -105,6 +107,11 @@ void ngx_connection_s::InitBeforeUse()
 void ngx_connection_s::PutOneToFree()
 {
     ++iCurrSequence;   
+    if(uiOnlineUid != 0) //连接断开: 把该用户从全局在线用户表中注销【这里是所有连接回收的唯一汇聚点】
+    {
+        COnlineUserTable::GetInstance()->RemoveUser(uiOnlineUid);
+        uiOnlineUid = 0;
+    }
     if(pcRecvMemery != NULL)//我们曾经给这个连接分配过接收数据的内存，则要释放内存
     {        
         CMemory::GetInstance()->FreeMemory(pcRecvMemery);

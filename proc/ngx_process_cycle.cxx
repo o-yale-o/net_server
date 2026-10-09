@@ -12,6 +12,7 @@
 #include "ngx_func.h"
 #include "ngx_macro.h"
 #include "ngx_c_conf.h"
+#include "ngx_c_onlineuser.h"  //全局在线用户表(共享内存)
 
 //函数声明
 static void NgxStartWorkerProcesses(int iProcessesNum);
@@ -89,7 +90,12 @@ void NgxMasterProcessCycle()
     }    
     //end 设置主进程标题
         
-    //从配置文件中读取要创建的worker进程数量
+    //创建全局在线用户表(共享内存)【必须在fork之前创建，worker才能共享同一块映射】
+    if(COnlineUserTable::GetInstance()->Init(true) == false)
+    {
+        exit(2); //致命问题，直接退
+    }
+
     CConfig *pConfig = CConfig::GetInstance(); //单例类
     int iProcessesNum = pConfig->GetIntDefault("WorkerProcesses",1); //从配置文件中得到要创建的worker进程数量
     NgxStartWorkerProcesses(iProcessesNum);  //这里要创建worker子进程
@@ -309,10 +315,15 @@ static void NgxWorkerProcessInit(int iProcesseIndex)
     //线程池代码，率先创建，至少要比和socket相关的内容优先
     CConfig *pConfig = CConfig::GetInstance();
     int tmpthreadnums = pConfig->GetIntDefault("ProcMsgRecvWorkThreadCount",5); //处理（接收到的）消息的（线程池中）线程数量
+    //挂接全局在线用户表(master已在fork之前创建好共享内存)
     if(g_ThreadPool.Create(tmpthreadnums) == false)  //创建线程池中线程
     {
         //内存没释放，但是简单粗暴退出；
         exit(-2);
+    }
+    if(COnlineUserTable::GetInstance()->Init(false) == false)
+    {
+        exit(-2); //致命问题，简单粗暴退出；
     }
     sleep(1); //再休息1秒；
 

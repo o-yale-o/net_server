@@ -17,8 +17,8 @@ make
 
 ```bash
 cd test
-./run_server_for_test.sh [端口] [worker数] [flood窗口ms] [flood阈值]
-    # 默认: 18080 / 2个worker / 100ms / 10次
+./run_server_for_test.sh [端口] [worker数] [flood窗口ms] [flood阈值] [回收等待秒]
+    # 默认: 18080 / 2个worker / 100ms / 10次 / 3秒(正式默认150秒)
     # 启动后会把运行目录写到 /tmp/ngtest_dir，日志在 <运行目录>/error.log
 
 ./stop_server_for_test.sh      # SIGTERM优雅停止并清理临时目录
@@ -61,7 +61,17 @@ python3 test_perf.py 127.0.0.1 18080 4 2000   # 4连接×每连接2000次心跳�
 
 覆盖 master 进程的 waitpid 收尸、worker 自动补齐、SIGTERM 优雅退出（脚本会自行启停服务器）。
 
-## 6. 一键回归（全部测试）
+## 6. 在线用户表测试
+
+```bash
+./run_server_for_test.sh 18080 2          # 回收等待已默认缩短为3秒，断线后稍等即可看到人数回落
+python3 test_onlineuser.py                # 登记登录/重复登录覆盖/断线注销/全局人数查询(共享内存跨worker)
+./stop_server_for_test.sh
+```
+
+注意: 用户注销发生在连接被延迟回收时(`Sock_RecyConnectionWaitTime`秒后)，所以断开后人数回落有最多3秒延迟。
+
+## 7. 一键回归（全部测试）
 
 ```bash
 cd test

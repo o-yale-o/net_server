@@ -93,6 +93,7 @@ struct ngx_connection_s
 
 	//和网络安全有关	
 	uint64_t                  uiTimeLastFloodKick;  //Flood攻击上次收到包的时间
+	uint64_t                  uiOnlineUid;      //登录成功后记录的在线用户uid(0=未登录)，连接回收时用于从全局在线用户表注销
 	int                       iFloodAttackCount;    //Flood攻击在该时间内收到包的次数统计
 	std::atomic<int>          iSendCount;           //发送队列中有的数据条目数，若client只发不收，则可能造成此数过大，依据此数做出踢出处理 
 	
